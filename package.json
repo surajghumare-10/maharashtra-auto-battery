@@ -1,0 +1,32 @@
+{
+  "name": "maharashtra-auto-battery",
+  "version": "1.0.0",
+  "description": "Counter Billing & Inventory PWA Web App for Maharashtra Auto Battery",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "build": "npm --prefix client run build",
+    "dev:server": "node server/server.js",
+    "dev:client": "npm --prefix client run dev",
+    "dev": "node server/server.js",
+    "test": "node test_api.js"
+  },
+  "keywords": [
+    "billing",
+    "battery-shop",
+    "pwa",
+    "pos",
+    "inventory"
+  ],
+  "author": "Maharashtra Auto Battery",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^13.0.3",
+    "cors": "^2.8.6",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "jsonwebtoken": "^9.0.3"
+  }
+}

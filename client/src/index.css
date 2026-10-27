@@ -1,0 +1,26 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    -webkit-tap-highlight-color: transparent;
+    -webkit-touch-callout: none;
+    user-select: none;
+  }
+  
+  input, textarea, select {
+    user-select: text;
+  }
+}
+
+/* Print specific optimizations */
+@media print {
+  @page {
+    margin: 5mm;
+  }
+  body {
+    background: white !important;
+    color: black !important;
+  }
+}

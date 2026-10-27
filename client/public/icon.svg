@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <rect width="512" height="512" fill="#1e40af" rx="96"/>
+  <!-- Battery Body -->
+  <rect x="96" y="140" width="320" height="260" rx="24" fill="#ffffff" stroke="#cbd5e1" stroke-width="12"/>
+  <!-- Terminals -->
+  <rect x="144" y="96" width="64" height="44" rx="8" fill="#cbd5e1"/>
+  <rect x="304" y="96" width="64" height="44" rx="8" fill="#cbd5e1"/>
+  <!-- Lightning Bolt -->
+  <path d="M280 180 L190 280 L250 280 L230 360 L320 260 L260 260 Z" fill="#1e40af"/>
+  <!-- Text -->
+  <text x="256" y="460" font-family="Arial, sans-serif" font-size="44" font-weight="900" fill="#ffffff" text-anchor="middle">MAB</text>
+</svg>
