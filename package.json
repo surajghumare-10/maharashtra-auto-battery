@@ -5,7 +5,8 @@
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
-    "build": "npm --prefix client run build",
+    "postinstall": "npm --prefix client install",
+    "build": "npm --prefix client install && npm --prefix client run build",
     "dev:server": "node server/server.js",
     "dev:client": "npm --prefix client run dev",
     "dev": "node server/server.js",
