@@ -5,7 +5,7 @@
   "main": "server/server.js",
   "scripts": {
     "start": "node server/server.js",
-    "postinstall": "npm --prefix client install",
+    "postinstall": "npm --prefix client install && npm rebuild better-sqlite3",
     "build": "npm --prefix client install && npm --prefix client run build",
     "dev:server": "node server/server.js",
     "dev:client": "npm --prefix client run dev",
