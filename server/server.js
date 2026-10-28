@@ -31,6 +31,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     shop: 'Maharashtra Auto Battery',
+    storage: process.env.DB_PATH ? 'persistent' : 'local',
     timestamp: new Date().toISOString()
   });
 });
