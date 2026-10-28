@@ -8,7 +8,7 @@ A clean, fast, mobile-friendly billing web app installable as a Progressive Web 
 ## ⚡ Tech Stack
 - **Frontend**: React (Vite) + Tailwind CSS + Lucide Icons
 - **Backend**: Node.js + Express
-- **Database**: SQLite with `better-sqlite3` in WAL mode (synchronous, blazing fast, zero configuration required)
+- **Database**: SQLite via the built-in `node:sqlite` module in WAL mode (no native addon build required)
 - **Auth**: JWT with `bcryptjs`-hashed passwords & inactivity auto-logout
 - **Messaging**: Meta WhatsApp Cloud API (primary), Twilio / Fast2SMS (SMS fallback), and automatic pre-filled `wa.me` link (zero-cost free fallback)
 - **PWA**: Installable on Android & iOS (`manifest.json` + `sw.js` offline caching)
@@ -32,7 +32,7 @@ Change your password any time from the header menu. Owners can also reset staff 
 ## 🚀 Quick Start (Running Locally)
 
 ### 1. Prerequisites
-- Node.js (v18 or higher recommended; v20/v22/v26 tested)
+- Node.js 22.5 or newer (`--experimental-sqlite` is used on Node 22)
 - npm
 
 ### 2. Installation

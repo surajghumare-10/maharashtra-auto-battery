@@ -17,8 +17,11 @@ import {
   Plus,
   Trash2,
   QrCode,
+  ScanLine,
   ShoppingCart
 } from 'lucide-react';
+
+const BarcodeScanner = React.lazy(() => import('../components/BarcodeScanner'));
 
 const BATTERY_TYPES = ['Car', 'Bike', 'Inverter', 'Tractor', 'Truck', 'E-rickshaw'];
 
@@ -62,6 +65,7 @@ export default function NewBill({ onOpenBillDetail }) {
   const [stockOverridePrompt, setStockOverridePrompt] = useState(null);
   const [saveSuccessModal, setSaveSuccessModal] = useState(null);
   const [showUpiQr, setShowUpiQr] = useState(false);
+  const [scannerTarget, setScannerTarget] = useState(null);
 
   useEffect(() => {
     loadBatteries();
@@ -156,6 +160,16 @@ export default function NewBill({ onOpenBillDetail }) {
   };
 
   const removeItem = (key) => setCartItems(prev => prev.filter(i => i.key !== key));
+
+  const handleBarcodeDetected = (value) => {
+    const serial = String(value || '').trim().toUpperCase();
+    if (!serial) return;
+    if (scannerTarget?.type === 'draft') {
+      setDraft(d => ({ ...d, serial_number: serial }));
+    } else if (scannerTarget?.type === 'item') {
+      updateItem(scannerTarget.key, 'serial_number', serial);
+    }
+  };
 
   const handleOldBatteryToggle = (returned) => {
     setOldBatteryReturned(returned);
@@ -496,7 +510,12 @@ export default function NewBill({ onOpenBillDetail }) {
 
                 <div>
                   <label className="block text-[11px] font-bold text-slate-700 mb-1">{t.serial_number}</label>
-                  <input type="text" value={draft.serial_number} onChange={(e) => setDraft(d => ({ ...d, serial_number: e.target.value.toUpperCase() }))} placeholder="EX-88910" className="w-full h-9 px-2 border border-slate-300 rounded text-sm font-bold text-slate-900 uppercase focus:border-accent-700 focus:outline-none bg-white" />
+                  <div className="relative">
+                    <input type="text" value={draft.serial_number} onChange={(e) => setDraft(d => ({ ...d, serial_number: e.target.value.toUpperCase() }))} placeholder="EX-88910" className="w-full h-9 pl-2 pr-9 border border-slate-300 rounded text-sm font-bold text-slate-900 uppercase focus:border-accent-700 focus:outline-none bg-white" />
+                    <button type="button" onClick={() => setScannerTarget({ type: 'draft' })} className="absolute right-1 top-1 h-7 w-7 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 text-slate-700" title="Scan barcode" aria-label="Scan barcode">
+                      <ScanLine className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
 
                 {oldBatteryReturned && (
@@ -551,7 +570,12 @@ export default function NewBill({ onOpenBillDetail }) {
                       </div>
                       <div>
                         <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Serial No</label>
-                        <input type="text" value={item.serial_number} onChange={(e) => updateItem(item.key, 'serial_number', e.target.value)} className="w-full h-8 px-2 border border-slate-300 rounded text-xs font-bold uppercase" />
+                        <div className="relative">
+                          <input type="text" value={item.serial_number} onChange={(e) => updateItem(item.key, 'serial_number', e.target.value)} className="w-full h-8 pl-2 pr-8 border border-slate-300 rounded text-xs font-bold uppercase" />
+                          <button type="button" onClick={() => setScannerTarget({ type: 'item', key: item.key })} className="absolute right-0.5 top-0.5 h-7 w-7 flex items-center justify-center rounded bg-slate-100 hover:bg-slate-200 text-slate-700" title="Scan barcode" aria-label="Scan barcode">
+                            <ScanLine className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
                       </div>
                       <div>
                         <label className="block text-[10px] font-bold text-slate-600 mb-0.5">Warranty (m)</label>
@@ -768,6 +792,14 @@ export default function NewBill({ onOpenBillDetail }) {
       )}
 
       {/* SUCCESS MODAL */}
+      <React.Suspense fallback={null}>
+        <BarcodeScanner
+          open={!!scannerTarget}
+          onClose={() => setScannerTarget(null)}
+          onDetected={handleBarcodeDetected}
+        />
+      </React.Suspense>
+
       {saveSuccessModal && (
         <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4 overflow-y-auto">
           <div className="bg-white rounded-xl max-w-lg w-full p-5 sm:p-6 border-2 border-emerald-500 shadow-2xl my-6">

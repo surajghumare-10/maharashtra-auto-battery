@@ -1,17 +1,20 @@
 import React, { useState } from 'react';
 import { api } from '../services/api';
 import { formatCurrency, formatDate } from '../utils/formatters';
-import { ShieldCheck, ShieldAlert, Search, AlertCircle, CheckCircle, XCircle, CalendarDays } from 'lucide-react';
+import { ShieldCheck, ShieldAlert, Search, AlertCircle, CheckCircle, XCircle, CalendarDays, ScanLine } from 'lucide-react';
+
+const BarcodeScanner = React.lazy(() => import('../components/BarcodeScanner'));
 
 export default function WarrantyCheck() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState('');
+  const [showScanner, setShowScanner] = useState(false);
 
-  const handleCheck = async (e) => {
-    e?.preventDefault();
-    if (!search.trim()) {
+  const checkValue = async (rawValue) => {
+    const value = String(rawValue || '').trim();
+    if (!value) {
       setError('Enter a battery serial number, customer mobile, or bill number.');
       return;
     }
@@ -19,13 +22,18 @@ export default function WarrantyCheck() {
     setLoading(true);
     setResult(null);
     try {
-      const res = await api.checkWarranty(search.trim());
+      const res = await api.checkWarranty(value);
       setResult(res);
     } catch (err) {
       setError(err.message || 'Warranty lookup failed');
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleCheck = (e) => {
+    e?.preventDefault();
+    checkValue(search);
   };
 
   const isValid = result?.status === 'valid';
@@ -59,6 +67,15 @@ export default function WarrantyCheck() {
             />
           </div>
           <button
+            type="button"
+            onClick={() => setShowScanner(true)}
+            className="h-11 px-3 bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold rounded-lg text-sm border-2 border-slate-300 flex items-center justify-center space-x-1.5"
+            title="Scan battery barcode"
+          >
+            <ScanLine className="w-4 h-4" />
+            <span>Scan</span>
+          </button>
+          <button
             type="submit"
             disabled={loading}
             className="h-11 px-5 bg-accent-700 hover:bg-accent-800 text-white font-black rounded-lg text-sm disabled:opacity-50"
@@ -67,6 +84,19 @@ export default function WarrantyCheck() {
           </button>
         </div>
       </form>
+
+      <React.Suspense fallback={null}>
+        <BarcodeScanner
+          open={showScanner}
+          onClose={() => setShowScanner(false)}
+          onDetected={(value) => {
+            const code = String(value || '').trim();
+            setSearch(code);
+            checkValue(code);
+          }}
+          title="Scan Serial Barcode / QR"
+        />
+      </React.Suspense>
 
       {error && (
         <div className="mb-4 p-3 bg-red-50 border border-red-300 rounded text-red-800 text-xs font-bold flex items-center space-x-2">
