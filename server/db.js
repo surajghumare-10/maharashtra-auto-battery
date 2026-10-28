@@ -317,17 +317,17 @@ function seedInitialData() {
     // Owner
     insertUser.run(
       'owner',
-      bcrypt.hashSync('owner123', salt),
-      'Suresh Patil (Owner)',
+      bcrypt.hashSync('Ganesh@123', salt),
+      'Ganesh Ghumare',
       'owner',
       1,
       1
     );
-    // Manager (father)
+    // Manager
     insertUser.run(
       'manager',
-      bcrypt.hashSync('manager123', salt),
-      'Dattatray Patil (Father/Manager)',
+      bcrypt.hashSync('Om@123', salt),
+      'Om Ghumare',
       'manager',
       1,
       1
@@ -452,7 +452,7 @@ Thank you! Ph: {shop_phone}`
 
     const insertStockMovement = db.prepare(`
       INSERT INTO stock_movements (battery_id, type, quantity, cost_price, supplier_name, reason, user_id, user_name)
-      VALUES (?, 'in', ?, ?, 'Opening Stock', 'Initial Inventory Setup', 1, 'Suresh Patil (Owner)')
+      VALUES (?, 'in', ?, ?, 'Opening Stock', 'Initial Inventory Setup', 1, 'Ganesh Ghumare')
     `);
 
     for (const b of batteries) {
@@ -491,7 +491,7 @@ Thank you! Ph: {shop_phone}`
         1, 5400, 5400, 1, 'Car',
         'Old Exide 35Ah', 600, 100, 4700,
         'UPI', 4700, 0, 72, 'EX-EP-992819',
-        'Swift Dzire fitment done', 'completed', 1, 'Suresh Patil (Owner)', 'sent'
+        'Swift Dzire fitment done', 'completed', 1, 'Ganesh Ghumare', 'sent'
       )
     `).run(cust1.lastInsertRowid);
 
@@ -516,7 +516,7 @@ Thank you! Ph: {shop_phone}`
         1, 13500, 13500, 1, 'Inverter',
         'Local Inverter 150Ah', 2200, 300, 11000,
         'Credit', 6000, 5000, 36, 'LUM-RC-881290',
-        'Will pay remaining ₹5,000 next Saturday', 'completed', 2, 'Dattatray Patil (Father/Manager)', 'sent'
+        'Will pay remaining ₹5,000 next Saturday', 'completed', 2, 'Om Ghumare', 'sent'
       )
     `).run(cust2.lastInsertRowid);
 

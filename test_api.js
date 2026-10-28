@@ -15,7 +15,7 @@ async function testWorkflow() {
 
   // 2. Test Passwords
   const ownerUser = db.prepare('SELECT * FROM users WHERE username = ?').get('owner');
-  const passCheck = bcrypt.compareSync('owner123', ownerUser.password_hash);
+  const passCheck = bcrypt.compareSync('Ganesh@123', ownerUser.password_hash);
   console.log(`✓ Owner password verification: ${passCheck ? 'PASSED' : 'FAILED'}`);
 
   // 3. Test Battery Catalog
