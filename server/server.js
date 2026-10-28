@@ -51,9 +51,16 @@ app.use('/api/backup', backupRoutes);
 // Serve Client in production or when client/dist exists
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
 if (fs.existsSync(clientDistPath)) {
-  app.use(express.static(clientDistPath));
+  app.use(express.static(clientDistPath, {
+    setHeaders(res, filePath) {
+      if (filePath.endsWith('index.html') || filePath.endsWith('sw.js')) {
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      }
+    }
+  }));
   app.use((req, res, next) => {
     if (req.method === 'GET' && !req.path.startsWith('/api')) {
+      res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
       return res.sendFile(path.join(clientDistPath, 'index.html'));
     }
     next();
