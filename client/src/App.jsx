@@ -9,6 +9,8 @@ import PriceList from './pages/PriceList';
 import CustomerDues from './pages/CustomerDues';
 import InventoryReport from './pages/InventoryReport';
 import Dashboard from './pages/Dashboard';
+import DealerKhata from './pages/DealerKhata';
+import WarrantyCheck from './pages/WarrantyCheck';
 import Settings from './pages/Settings';
 
 function MainApp() {
@@ -47,6 +49,10 @@ function MainApp() {
         {activeTab === 'dues' && canViewDues && <CustomerDues />}
 
         {activeTab === 'inventory' && canViewInventory && <InventoryReport />}
+
+        {activeTab === 'dealers' && canViewDues && <DealerKhata />}
+
+        {activeTab === 'warranty' && <WarrantyCheck />}
 
         {activeTab === 'dashboard' && (isOwner || isManager) && (
           <Dashboard

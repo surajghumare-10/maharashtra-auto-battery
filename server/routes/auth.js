@@ -23,15 +23,20 @@ router.post('/login', (req, res) => {
   }
 
   const token = generateToken(user, !!rememberMe);
+  const defaultPasswords = ['owner123', 'manager123', 'worker123', 'password', 'admin123'];
+  const isDefaultPassword = defaultPasswords.some(p => bcrypt.compareSync(p, user.password_hash));
+
   return res.json({
     token,
+    must_change_password: isDefaultPassword,
     user: {
       id: user.id,
       username: user.username,
       name: user.name,
       role: user.role,
       can_view_dues: user.can_view_dues,
-      can_view_inventory: user.can_view_inventory
+      can_view_inventory: user.can_view_inventory,
+      must_change_password: isDefaultPassword
     }
   });
 });
@@ -39,6 +44,29 @@ router.post('/login', (req, res) => {
 // GET /me
 router.get('/me', authenticateToken, (req, res) => {
   res.json({ user: req.user });
+});
+
+// PUT /change-password - Logged-in user changes their own password
+router.put('/change-password', authenticateToken, (req, res) => {
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required' });
+  }
+  if (String(newPassword).length < 6) {
+    return res.status(400).json({ error: 'New password must be at least 6 characters long' });
+  }
+
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(req.user.id);
+  if (!user || !bcrypt.compareSync(currentPassword, user.password_hash)) {
+    return res.status(400).json({ error: 'Current password is incorrect' });
+  }
+
+  const salt = bcrypt.genSaltSync(10);
+  const passwordHash = bcrypt.hashSync(newPassword, salt);
+  db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(passwordHash, req.user.id);
+
+  res.json({ message: 'Password updated successfully. Please use the new password next time.' });
 });
 
 // GET /users (Owner only)

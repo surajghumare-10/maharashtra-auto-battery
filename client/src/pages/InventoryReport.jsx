@@ -47,10 +47,15 @@ export default function InventoryReport() {
     battery_id: '',
     quantity: '',
     cost_price: '',
+    supplier_id: '',
     supplier_name: '',
     reference_id: '',
-    notes: ''
+    notes: '',
+    total_cost: '',
+    amount_paid: '',
+    payment_mode: 'Cash'
   });
+  const [dealers, setDealers] = useState([]);
 
   const [adjustForm, setAdjustForm] = useState({
     battery_id: '',
@@ -69,6 +74,20 @@ export default function InventoryReport() {
   useEffect(() => {
     loadReport();
   }, [selectedType]);
+
+  useEffect(() => {
+    api.getSupplierOptions()
+      .then(res => setDealers(res.suppliers || []))
+      .catch(() => {});
+  }, []);
+
+  const purchaseTotalPreview = (() => {
+    const qty = parseFloat(stockForm.quantity) || 0;
+    const cost = parseFloat(stockForm.cost_price) || 0;
+    if (stockForm.total_cost !== '' && !isNaN(parseFloat(stockForm.total_cost))) return parseFloat(stockForm.total_cost) || 0;
+    return qty * cost;
+  })();
+  const paidPreview = Math.min(parseFloat(stockForm.amount_paid) || 0, purchaseTotalPreview);
 
   const loadReport = async () => {
     setLoading(true);
@@ -99,6 +118,10 @@ export default function InventoryReport() {
     try {
       await api.addStock(stockForm);
       setShowAddStockModal(false);
+      setStockForm({
+        battery_id: '', quantity: '', cost_price: '', supplier_id: '', supplier_name: '',
+        reference_id: '', notes: '', total_cost: '', amount_paid: '', payment_mode: 'Cash'
+      });
       alert('Stock added successfully');
       loadReport();
     } catch (err) {
@@ -544,18 +567,72 @@ export default function InventoryReport() {
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-0.5">Supplier Name</label>
-                <input
-                  type="text"
-                  placeholder="e.g. Exide Depot Pune / Shinde Auto Agency"
-                  value={stockForm.supplier_name}
-                  onChange={(e) => setStockForm({ ...stockForm, supplier_name: e.target.value })}
-                  className="w-full h-9 px-2 border rounded"
-                />
+              <div className="grid grid-cols-1 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Dealer / Supplier (Khata)</label>
+                  <select
+                    value={stockForm.supplier_id}
+                    onChange={(e) => setStockForm({ ...stockForm, supplier_id: e.target.value })}
+                    className="w-full h-9 px-2 border rounded font-semibold bg-white"
+                  >
+                    <option value="">-- Select dealer (or type new name below) --</option>
+                    {dealers.map(d => (
+                      <option key={d.id} value={d.id}>{d.name}{d.city ? ` (${d.city})` : ''}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Or New Dealer Name</label>
+                  <input
+                    type="text"
+                    placeholder="e.g. Shinde Auto Agency"
+                    value={stockForm.supplier_name}
+                    onChange={(e) => setStockForm({ ...stockForm, supplier_name: e.target.value })}
+                    className="w-full h-9 px-2 border rounded"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-0.5">If the dealer is new, it will be created automatically in Dealer Khata.</p>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Total Purchase Cost (₹)</label>
+                  <input
+                    type="number"
+                    placeholder="Auto: Qty × Cost"
+                    value={stockForm.total_cost}
+                    onChange={(e) => setStockForm({ ...stockForm, total_cost: e.target.value })}
+                    className="w-full h-9 px-2 border rounded"
+                  />
+                </div>
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Amount Paid Now (₹)</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={purchaseTotalPreview}
+                    placeholder="0"
+                    value={stockForm.amount_paid}
+                    onChange={(e) => setStockForm({ ...stockForm, amount_paid: e.target.value })}
+                    className="w-full h-9 px-2 border rounded font-bold"
+                  />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Payment Mode</label>
+                  <select
+                    value={stockForm.payment_mode}
+                    onChange={(e) => setStockForm({ ...stockForm, payment_mode: e.target.value })}
+                    className="w-full h-9 px-2 border rounded font-semibold bg-white"
+                  >
+                    <option>Cash</option>
+                    <option>UPI</option>
+                    <option>Bank Transfer</option>
+                    <option>Cheque</option>
+                  </select>
+                </div>
                 <div>
                   <label className="block font-bold text-slate-700 mb-0.5">Supplier Invoice / Ref No</label>
                   <input
@@ -566,16 +643,23 @@ export default function InventoryReport() {
                     className="w-full h-9 px-2 border rounded"
                   />
                 </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Notes</label>
-                  <input
-                    type="text"
-                    placeholder="Remarks"
-                    value={stockForm.notes}
-                    onChange={(e) => setStockForm({ ...stockForm, notes: e.target.value })}
-                    className="w-full h-9 px-2 border rounded"
-                  />
-                </div>
+              </div>
+
+              <div>
+                <label className="block font-bold text-slate-700 mb-0.5">Notes</label>
+                <input
+                  type="text"
+                  placeholder="Remarks"
+                  value={stockForm.notes}
+                  onChange={(e) => setStockForm({ ...stockForm, notes: e.target.value })}
+                  className="w-full h-9 px-2 border rounded"
+                />
+              </div>
+
+              <div className="p-2.5 bg-amber-50 border border-amber-300 rounded-lg flex items-center justify-between text-xs font-bold">
+                <span className="text-slate-700">Purchase: {formatCurrency(purchaseTotalPreview)}</span>
+                <span className="text-emerald-700">Paid: {formatCurrency(paidPreview)}</span>
+                <span className="text-red-600">Balance: {formatCurrency(Math.max(0, purchaseTotalPreview - paidPreview))}</span>
               </div>
 
               <div className="flex justify-end space-x-2 pt-2 border-t">

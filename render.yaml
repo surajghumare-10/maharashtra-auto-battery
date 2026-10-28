@@ -1,0 +1,24 @@
+services:
+  - type: web
+    name: maharashtra-auto-battery
+    runtime: node
+    plan: starter
+    buildCommand: npm run build
+    startCommand: node server/server.js
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: DATA_DIR
+        value: /var/data
+      - key: DB_PATH
+        value: /var/data/mab_battery.sqlite
+      - key: BACKUP_DIR
+        value: /var/data/backups
+      - key: JWT_SECRET
+        generateValue: true
+    disk:
+      name: mab-data
+      mountPath: /var/data
+      sizeGB: 1

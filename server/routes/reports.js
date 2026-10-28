@@ -34,8 +34,7 @@ router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), (
 
   // 2. All-time pending dues across all customers
   const overallDues = db.prepare(`
-    SELECT 
-      COALESCE(SUM(grand_total), 0) - (COALESCE(SUM(amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments), 0)) AS total_pending_dues
+    SELECT COALESCE(SUM(balance_due), 0) AS total_pending_dues
     FROM bills
     WHERE status != 'cancelled'
   `).get();
@@ -80,11 +79,14 @@ router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), (
 
   // 6. Recent 5 bills
   const recentBills = db.prepare(`
-    SELECT id, bill_no, customer_name, customer_mobile, battery_brand, battery_model, grand_total, payment_mode, created_at, created_by_name
+    SELECT id, bill_no, customer_name, customer_mobile, vehicle_number, village_name, battery_brand, battery_model, grand_total, payment_mode, created_at, created_by_name
     FROM bills
     WHERE status != 'cancelled'
     ORDER BY id DESC LIMIT 5
   `).all();
+
+  const dashItemsStmt = db.prepare('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC');
+  const recentBillsWithItems = recentBills.map(b => ({ ...b, items: dashItemsStmt.all(b.id) }));
 
   res.json({
     today: {
@@ -103,7 +105,7 @@ router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), (
     },
     last7Days,
     monthlySales,
-    recentBills
+    recentBills: recentBillsWithItems
   });
 });
 
@@ -113,10 +115,10 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
 
   let query = `
     SELECT 
-      c.id, c.name, c.mobile, c.address, c.created_at,
+      c.id, c.name, c.mobile, c.address, c.village, c.last_vehicle_number, c.created_at,
       COALESCE(SUM(b.grand_total), 0) AS total_purchases,
-      COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments WHERE customer_id = c.id), 0) AS total_paid,
-      (COALESCE(SUM(b.grand_total), 0) - (COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments WHERE customer_id = c.id), 0))) AS pending_balance,
+      COALESCE(SUM(b.amount_paid), 0) AS total_paid,
+      COALESCE(SUM(b.balance_due), 0) AS pending_balance,
       MAX(b.created_at) AS last_purchase_date,
       (SELECT MAX(created_at) FROM payments WHERE customer_id = c.id) AS last_payment_date
     FROM customers c
@@ -126,9 +128,9 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
   const params = [];
 
   if (search && search.trim()) {
-    query += ' AND (c.name LIKE ? OR c.mobile LIKE ?)';
+    query += ' AND (c.name LIKE ? OR c.mobile LIKE ? OR c.village LIKE ? OR c.last_vehicle_number LIKE ?)';
     const term = `%${search.trim()}%`;
-    params.push(term, term);
+    params.push(term, term, term, term);
   }
 
   query += ' GROUP BY c.id';
@@ -151,13 +153,14 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
   const overallSummary = db.prepare(`
     SELECT 
       COALESCE(SUM(b.grand_total), 0) AS total_sales_all_time,
-      COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments), 0) AS total_paid_all_time
+      COALESCE(SUM(b.amount_paid), 0) AS total_paid_all_time,
+      COALESCE(SUM(b.balance_due), 0) AS total_pending_all_time
     FROM bills b
     WHERE b.status != 'cancelled'
   `).get();
 
   const totalSalesToDate = overallSummary.total_sales_all_time;
-  const totalPendingAcrossAll = Math.max(0, overallSummary.total_sales_all_time - overallSummary.total_paid_all_time);
+  const totalPendingAcrossAll = Math.max(0, overallSummary.total_pending_all_time);
 
   // Count customers with dues > 0
   const customersWithDues = db.prepare(`
@@ -166,7 +169,7 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
       FROM customers c
       LEFT JOIN bills b ON b.customer_id = c.id AND b.status != 'cancelled'
       GROUP BY c.id
-      HAVING (COALESCE(SUM(b.grand_total), 0) - (COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments WHERE customer_id = c.id), 0))) > 0
+      HAVING COALESCE(SUM(b.balance_due), 0) > 0
     )
   `).get().count;
 
@@ -191,11 +194,10 @@ router.post('/dues/:customerId/send-reminder', authenticateToken, requireDuesAcc
 
   // Calculate balance
   const balanceRow = db.prepare(`
-    SELECT 
-      COALESCE(SUM(b.grand_total), 0) - (COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments WHERE customer_id = ?), 0)) AS balance_due
+    SELECT COALESCE(SUM(b.balance_due), 0) AS balance_due
     FROM bills b
     WHERE b.customer_id = ? AND b.status != 'cancelled'
-  `).get(customerId, customerId);
+  `).get(customerId);
 
   const balanceDue = Math.max(0, balanceRow ? balanceRow.balance_due : 0);
   if (balanceDue <= 0) {
@@ -262,11 +264,15 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
     let stockInQty = 0;
 
     if (startDate || endDate) {
-      // Stock sold in range
-      let soldQ = "SELECT COALESCE(SUM(quantity), 0) as q FROM bills WHERE battery_id = ? AND status != 'cancelled'";
+      // Stock sold in range (from bill items so multi-item bills count correctly)
+      let soldQ = `
+        SELECT COALESCE(SUM(bi.quantity), 0) as q
+        FROM bill_items bi
+        JOIN bills b ON b.id = bi.bill_id
+        WHERE bi.battery_id = ? AND b.status != 'cancelled'`;
       const soldParams = [b.id];
-      if (startDate) { soldQ += ' AND date(created_at) >= date(?)'; soldParams.push(startDate); }
-      if (endDate) { soldQ += ' AND date(created_at) <= date(?)'; soldParams.push(endDate); }
+      if (startDate) { soldQ += ' AND date(b.created_at) >= date(?)'; soldParams.push(startDate); }
+      if (endDate) { soldQ += ' AND date(b.created_at) <= date(?)'; soldParams.push(endDate); }
       soldQty = db.prepare(soldQ).get(...soldParams).q;
 
       // Stock In in range
@@ -277,7 +283,12 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
       stockInQty = db.prepare(inQ).get(...inParams).q;
     } else {
       // All-time sold and in
-      soldQty = db.prepare("SELECT COALESCE(SUM(quantity), 0) as q FROM bills WHERE battery_id = ? AND status != 'cancelled'").get(b.id).q;
+      soldQty = db.prepare(`
+        SELECT COALESCE(SUM(bi.quantity), 0) as q
+        FROM bill_items bi
+        JOIN bills b ON b.id = bi.bill_id
+        WHERE bi.battery_id = ? AND b.status != 'cancelled'
+      `).get(b.id).q;
       stockInQty = db.prepare("SELECT COALESCE(SUM(quantity), 0) as q FROM stock_movements WHERE battery_id = ? AND type = 'in'").get(b.id).q;
     }
 
@@ -319,22 +330,28 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
 
   // Top selling models
   const topSelling = db.prepare(`
-    SELECT b.brand, b.model_name, b.type, SUM(bi.quantity) AS total_sold, SUM(bi.grand_total) as revenue
-    FROM bills bi
+    SELECT b.brand, b.model_name, b.type, SUM(bi.quantity) AS total_sold, SUM(bi.subtotal) as revenue
+    FROM bill_items bi
+    JOIN bills bl ON bl.id = bi.bill_id
     JOIN batteries b ON b.id = bi.battery_id
-    WHERE bi.status != 'cancelled'
+    WHERE bl.status != 'cancelled'
     GROUP BY bi.battery_id
     ORDER BY total_sold DESC LIMIT 5
   `).all();
 
   // Slow moving models (no sales in last 60 days)
   const slowMoving = db.prepare(`
-    SELECT b.id, b.brand, b.model_name, b.type, b.current_stock, MAX(bi.created_at) AS last_sale_date
+    SELECT b.id, b.brand, b.model_name, b.type, b.current_stock, ls.last_sale_date
     FROM batteries b
-    LEFT JOIN bills bi ON bi.battery_id = b.id AND bi.status != 'cancelled'
+    LEFT JOIN (
+      SELECT bi.battery_id, MAX(bl.created_at) AS last_sale_date
+      FROM bill_items bi
+      JOIN bills bl ON bl.id = bi.bill_id
+      WHERE bl.status != 'cancelled'
+      GROUP BY bi.battery_id
+    ) ls ON ls.battery_id = b.id
     WHERE b.is_active = 1
-    GROUP BY b.id
-    HAVING last_sale_date IS NULL OR date(last_sale_date) < date('now', 'localtime', '-60 days')
+      AND (ls.last_sale_date IS NULL OR date(ls.last_sale_date) < date('now', 'localtime', '-60 days'))
     ORDER BY b.current_stock DESC LIMIT 10
   `).all();
 

@@ -221,7 +221,10 @@ export default function Dashboard({ onOpenBillDetail }) {
                     <span className="text-accent-700">{b.bill_no}</span> • {b.customer_name}
                   </div>
                   <div className="text-[11px] text-slate-500 mt-0.5">
-                    {b.battery_brand} {b.battery_model} • {b.payment_mode} • By {b.created_by_name?.split(' ')[0]}
+                    {(b.items && b.items.length > 0)
+                      ? b.items.map(i => `${i.brand} ${i.model_name} x${i.quantity}`).join(' + ')
+                      : `${b.battery_brand} ${b.battery_model}`}
+                    {' • '}{b.payment_mode} • By {b.created_by_name?.split(' ')[0]}
                   </div>
                 </div>
                 <div className="text-right font-black text-slate-900 text-sm">

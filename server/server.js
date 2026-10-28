@@ -15,6 +15,7 @@ const paymentRoutes = require('./routes/payments');
 const stockRoutes = require('./routes/stock');
 const reportRoutes = require('./routes/reports');
 const settingRoutes = require('./routes/settings');
+const supplierRoutes = require('./routes/suppliers');
 const backupRoutes = require('./routes/backup');
 
 const app = express();
@@ -43,6 +44,7 @@ app.use('/api/payments', paymentRoutes);
 app.use('/api/stock', stockRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/settings', settingRoutes);
+app.use('/api/suppliers', supplierRoutes);
 app.use('/api/backup', backupRoutes);
 
 // Serve Client in production or when client/dist exists

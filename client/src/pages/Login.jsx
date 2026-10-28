@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { ShieldCheck, UserCheck, KeyRound, AlertTriangle } from 'lucide-react';
+import { KeyRound } from 'lucide-react';
 
 export default function Login() {
   const { login, t, inactivityNotice, setInactivityNotice } = useAuth();
@@ -25,12 +25,6 @@ export default function Login() {
     } finally {
       setLoading(false);
     }
-  };
-
-  const handleQuickLogin = (u, p) => {
-    setUsername(u);
-    setPassword(p);
-    setError('');
   };
 
   return (
@@ -82,7 +76,7 @@ export default function Login() {
                 required
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
-                placeholder="e.g. owner, manager, worker"
+                placeholder="Enter your username"
                 className="w-full h-12 px-3 border-2 border-slate-300 rounded text-base font-medium focus:border-accent-700 focus:outline-none"
               />
             </div>
@@ -129,50 +123,6 @@ export default function Login() {
               )}
             </button>
           </form>
-
-          {/* Quick Demo Login Buttons for Tester */}
-          <div className="mt-6 pt-5 border-t border-slate-200">
-            <p className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2.5 text-center">
-              Quick Test Login (One-Tap):
-            </p>
-            <div className="grid grid-cols-1 gap-2">
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('owner', 'owner123')}
-                className="w-full py-2.5 px-3 bg-blue-50 hover:bg-blue-100 border border-blue-200 rounded text-left flex items-center justify-between text-xs font-semibold text-blue-900 active:bg-blue-200"
-              >
-                <div className="flex items-center space-x-2">
-                  <ShieldCheck className="w-4 h-4 text-blue-700" />
-                  <span>Owner: <strong>owner</strong> / owner123 (Full Access)</span>
-                </div>
-                <span className="text-[10px] bg-blue-200 text-blue-800 px-1.5 py-0.5 rounded font-bold">Fill</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('manager', 'manager123')}
-                className="w-full py-2.5 px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 rounded text-left flex items-center justify-between text-xs font-semibold text-emerald-900 active:bg-emerald-200"
-              >
-                <div className="flex items-center space-x-2">
-                  <UserCheck className="w-4 h-4 text-emerald-700" />
-                  <span>Manager (Father): <strong>manager</strong> / manager123</span>
-                </div>
-                <span className="text-[10px] bg-emerald-200 text-emerald-800 px-1.5 py-0.5 rounded font-bold">Fill</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => handleQuickLogin('worker', 'worker123')}
-                className="w-full py-2.5 px-3 bg-slate-100 hover:bg-slate-200 border border-slate-300 rounded text-left flex items-center justify-between text-xs font-semibold text-slate-800 active:bg-slate-300"
-              >
-                <div className="flex items-center space-x-2">
-                  <UserCheck className="w-4 h-4 text-slate-600" />
-                  <span>Worker: <strong>worker</strong> / worker123 (Today Only)</span>
-                </div>
-                <span className="text-[10px] bg-slate-200 text-slate-700 px-1.5 py-0.5 rounded font-bold">Fill</span>
-              </button>
-            </div>
-          </div>
         </div>
 
         <p className="text-center text-xs text-slate-500 mt-4">

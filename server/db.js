@@ -3,18 +3,22 @@ const path = require('path');
 const fs = require('fs');
 const bcrypt = require('bcryptjs');
 
-// Ensure data directory exists
-const dataDir = path.join(__dirname, '..', 'data');
+// Ensure data directory exists (override with DATA_DIR for persistent disks)
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', 'data');
 if (!fs.existsSync(dataDir)) {
   fs.mkdirSync(dataDir, { recursive: true });
 }
 
-const backupsDir = path.join(__dirname, '..', 'backups');
+const backupsDir = process.env.BACKUP_DIR || path.join(__dirname, '..', 'backups');
 if (!fs.existsSync(backupsDir)) {
   fs.mkdirSync(backupsDir, { recursive: true });
 }
 
-const dbPath = path.join(dataDir, 'mab_battery.sqlite');
+const dbPath = process.env.DB_PATH || path.join(dataDir, 'mab_battery.sqlite');
+const dbDir = path.dirname(dbPath);
+if (!fs.existsSync(dbDir)) {
+  fs.mkdirSync(dbDir, { recursive: true });
+}
 const db = new Database(dbPath);
 
 // Enable WAL mode for high performance and concurrent reads/writes
@@ -105,6 +109,28 @@ function initSchema() {
       updated_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
 
+    -- Bill line items (supports multiple battery models / multiple units on one bill)
+    CREATE TABLE IF NOT EXISTS bill_items (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      bill_id INTEGER NOT NULL REFERENCES bills(id) ON DELETE CASCADE,
+      battery_id INTEGER REFERENCES batteries(id),
+      brand TEXT NOT NULL,
+      model_name TEXT NOT NULL,
+      type TEXT NOT NULL,
+      capacity_ah INTEGER,
+      quantity INTEGER NOT NULL DEFAULT 1,
+      unit_price REAL NOT NULL,
+      subtotal REAL NOT NULL,
+      exchange_discount REAL NOT NULL DEFAULT 0,
+      warranty_months INTEGER NOT NULL,
+      serial_number TEXT,
+      old_battery_returned INTEGER NOT NULL DEFAULT 0,
+      old_battery_type TEXT,
+      old_battery_brand TEXT,
+      old_battery_condition TEXT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
     -- Bill edit history (audit trail)
     CREATE TABLE IF NOT EXISTS bill_edits (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -171,9 +197,111 @@ function initSchema() {
       sold_by_name TEXT NOT NULL,
       created_at TEXT DEFAULT (datetime('now', 'localtime'))
     );
+
+    -- Suppliers table (Dealers from whom shop purchases stock)
+    CREATE TABLE IF NOT EXISTS suppliers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      contact_person TEXT,
+      mobile TEXT,
+      city TEXT,
+      notes TEXT,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+
+    -- Supplier payments (payments made to dealers)
+    CREATE TABLE IF NOT EXISTS supplier_payments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      supplier_id INTEGER NOT NULL REFERENCES suppliers(id),
+      amount REAL NOT NULL,
+      payment_mode TEXT NOT NULL CHECK(payment_mode IN ('Cash', 'UPI', 'Bank Transfer', 'Cheque')),
+      reference_no TEXT,
+      notes TEXT,
+      paid_by INTEGER NOT NULL REFERENCES users(id),
+      paid_by_name TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now', 'localtime'))
+    );
+  `);
+
+  // Safe schema migrations for existing databases
+  function addColumnIfNotExists(table, column, def) {
+    try {
+      const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!cols.some(c => c.name === column)) {
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${def}`);
+      }
+    } catch (e) {
+      console.error(`Migration error on ${table}.${column}:`, e.message);
+    }
+  }
+
+  addColumnIfNotExists('bills', 'vehicle_number', 'TEXT');
+  addColumnIfNotExists('bills', 'village_name', 'TEXT');
+  addColumnIfNotExists('customers', 'village', 'TEXT');
+  addColumnIfNotExists('customers', 'last_vehicle_number', 'TEXT');
+  addColumnIfNotExists('stock_movements', 'supplier_id', 'INTEGER');
+  addColumnIfNotExists('stock_movements', 'total_cost', 'REAL DEFAULT 0');
+  addColumnIfNotExists('stock_movements', 'amount_paid', 'REAL DEFAULT 0');
+  addColumnIfNotExists('stock_movements', 'balance_due', 'REAL DEFAULT 0');
+  addColumnIfNotExists('suppliers', 'is_active', 'INTEGER DEFAULT 1');
+
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_bill_items_bill ON bill_items(bill_id);
+    CREATE INDEX IF NOT EXISTS idx_bill_items_battery ON bill_items(battery_id);
+    CREATE INDEX IF NOT EXISTS idx_bills_customer ON bills(customer_id);
+    CREATE INDEX IF NOT EXISTS idx_bills_created ON bills(created_at);
+    CREATE INDEX IF NOT EXISTS idx_stock_movements_battery ON stock_movements(battery_id);
+    CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments(supplier_id);
   `);
 
   seedInitialData();
+  backfillBillItems();
+}
+
+// Older bills were single-item. Create one bill_items row per legacy bill so
+// every report/print/dues calculation can rely on the same items table.
+function backfillBillItems() {
+  const legacyBills = db.prepare(`
+    SELECT b.* FROM bills b
+    WHERE NOT EXISTS (SELECT 1 FROM bill_items bi WHERE bi.bill_id = b.id)
+  `).all();
+
+  if (legacyBills.length === 0) return;
+
+  const insert = db.prepare(`
+    INSERT INTO bill_items (
+      bill_id, battery_id, brand, model_name, type, capacity_ah,
+      quantity, unit_price, subtotal, exchange_discount, warranty_months,
+      serial_number, old_battery_returned, old_battery_type, old_battery_brand,
+      old_battery_condition, created_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+
+  const tx = db.transaction(() => {
+    for (const b of legacyBills) {
+      insert.run(
+        b.id,
+        b.battery_id,
+        b.battery_brand || 'Battery',
+        b.battery_model || '',
+        b.battery_type || 'Car',
+        b.battery_capacity,
+        b.quantity || 1,
+        b.unit_price || 0,
+        b.subtotal || b.grand_total || 0,
+        b.exchange_discount || 0,
+        b.warranty_months || 12,
+        b.serial_number,
+        b.old_battery_returned || 0,
+        b.old_battery_type,
+        b.old_battery_brand,
+        b.old_battery_condition,
+        b.created_at
+      );
+    }
+  });
+  tx();
+  console.log(`✓ Backfilled ${legacyBills.length} legacy bills into bill_items`);
 }
 
 function seedInitialData() {
@@ -225,7 +353,10 @@ function seedInitialData() {
     alt_phone: '+91 94220 54321',
     gst_number: '27ABCDE1234F1Z5',
     upi_id: 'mahabattery@okhdfcbank',
+    upi_payee_name: 'Maharashtra Auto Battery',
     owner_mobile: '9822012345',
+    shop_logo: '',
+    invoice_note: 'Thank you for your business! Visit again!',
     terms: '1. Warranty claims as per manufacturer policy. 2. Please keep this bill & warranty card safely. 3. Battery replacement requires original bill and physical warranty card.',
     whatsapp_api_url: 'https://graph.facebook.com/v19.0',
     whatsapp_phone_number_id: '',

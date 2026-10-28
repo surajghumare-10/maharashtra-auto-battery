@@ -424,8 +424,12 @@ export default function CustomerDues() {
                             ) : (
                               details.bills.map(b => (
                                 <div key={b.id} className="p-2 bg-white rounded border border-slate-200">
-                                  <div className="flex justify-between font-bold text-slate-900">
-                                    <span>{b.bill_no} • {b.battery_brand} {b.battery_model}</span>
+                                  <div className="flex justify-between font-bold text-slate-900 gap-2">
+                                    <span>
+                                      {b.bill_no} • {(b.items && b.items.length > 0)
+                                        ? b.items.map(i => `${i.brand} ${i.model_name} x${i.quantity}`).join(' + ')
+                                        : `${b.battery_brand} ${b.battery_model}`}
+                                    </span>
                                     <span>{formatCurrency(b.grand_total)}</span>
                                   </div>
                                   <div className="text-[11px] text-slate-600 flex justify-between mt-0.5">

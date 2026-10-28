@@ -23,4 +23,35 @@
     background: white !important;
     color: black !important;
   }
+
+  /* Print only the invoice, never the app shell / nav / modals behind it */
+  body * {
+    visibility: hidden !important;
+  }
+  #invoice-print-area,
+  #invoice-print-area * {
+    visibility: visible !important;
+  }
+  #invoice-print-area {
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    width: 100% !important;
+    border: 0 !important;
+    box-shadow: none !important;
+  }
+  .print-modal {
+    position: static !important;
+    overflow: visible !important;
+    background: transparent !important;
+    padding: 0 !important;
+  }
+  .print-modal > div {
+    max-width: none !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
 }

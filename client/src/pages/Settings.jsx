@@ -13,7 +13,9 @@ import {
   Trash2,
   Check,
   Save,
-  AlertCircle
+  AlertCircle,
+  X,
+  Image as ImageIcon
 } from 'lucide-react';
 
 export default function Settings() {
@@ -76,6 +78,32 @@ export default function Settings() {
 
   const handleInputChange = (key, value) => {
     setFormData(prev => ({ ...prev, [key]: value }));
+  };
+
+  const handleLogoUpload = (e) => {
+    const file = e.target.files && e.target.files[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      alert('Please choose an image file (PNG/JPG).');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = () => {
+      const img = new Image();
+      img.onload = () => {
+        const maxWidth = 600;
+        const scale = Math.min(1, maxWidth / img.width);
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.width * scale);
+        canvas.height = Math.round(img.height * scale);
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        handleInputChange('shop_logo', canvas.toDataURL('image/png', 0.85));
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+    e.target.value = '';
   };
 
   const handleSaveSettings = async (e) => {
@@ -221,6 +249,35 @@ export default function Settings() {
         <form onSubmit={handleSaveSettings} className="bg-white border-2 border-slate-300 rounded-lg p-4 space-y-3.5 text-xs shadow-sm">
           <h3 className="text-sm font-black text-slate-900 border-b pb-1">Shop Profile & Invoice Header</h3>
 
+          <div className="p-3 bg-slate-50 border border-slate-200 rounded-lg">
+            <label className="block font-bold text-slate-700 mb-1">Shop Logo (printed on invoice)</label>
+            <div className="flex items-center space-x-3">
+              {formData.shop_logo ? (
+                <img src={formData.shop_logo} alt="Shop logo preview" className="h-16 w-16 object-contain bg-white border border-slate-300 rounded" />
+              ) : (
+                <div className="h-16 w-16 flex items-center justify-center bg-white border border-dashed border-slate-300 rounded text-slate-400">
+                  <ImageIcon className="w-6 h-6" />
+                </div>
+              )}
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="px-3 py-2 bg-accent-700 hover:bg-accent-800 text-white font-bold rounded text-xs cursor-pointer">
+                  Upload Logo
+                  <input type="file" accept="image/*" onChange={handleLogoUpload} className="hidden" />
+                </label>
+                {formData.shop_logo && (
+                  <button
+                    type="button"
+                    onClick={() => handleInputChange('shop_logo', '')}
+                    className="px-3 py-2 bg-white text-red-700 border border-red-300 rounded text-xs font-bold hover:bg-red-50"
+                  >
+                    Remove Logo
+                  </button>
+                )}
+                <span className="text-[11px] text-slate-500">Square PNG/JPG works best. Auto-resized before upload.</span>
+              </div>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block font-bold text-slate-700 mb-1">Shop Name *</label>
@@ -285,14 +342,28 @@ export default function Settings() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-bold text-slate-700 mb-1">Shop UPI ID (for Customer Reminders)</label>
+              <label className="block font-bold text-slate-700 mb-1">Shop UPI ID (for QR codes &amp; reminders)</label>
               <input
                 type="text"
                 value={formData.upi_id || ''}
                 onChange={(e) => handleInputChange('upi_id', e.target.value)}
+                placeholder="e.g. shopname@okhdfcbank"
                 className="w-full h-10 px-3 border border-slate-300 rounded font-semibold"
               />
             </div>
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">UPI Payee Name (shown in UPI apps)</label>
+              <input
+                type="text"
+                value={formData.upi_payee_name || ''}
+                onChange={(e) => handleInputChange('upi_payee_name', e.target.value)}
+                placeholder="Maharashtra Auto Battery"
+                className="w-full h-10 px-3 border border-slate-300 rounded font-semibold"
+              />
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block font-bold text-slate-700 mb-1">Owner Mobile (for New Bill Alerts)</label>
               <input
@@ -300,6 +371,15 @@ export default function Settings() {
                 value={formData.owner_mobile || ''}
                 onChange={(e) => handleInputChange('owner_mobile', e.target.value)}
                 className="w-full h-10 px-3 border border-slate-300 rounded font-semibold"
+              />
+            </div>
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Invoice Footer Note</label>
+              <input
+                type="text"
+                value={formData.invoice_note || ''}
+                onChange={(e) => handleInputChange('invoice_note', e.target.value)}
+                className="w-full h-10 px-3 border border-slate-300 rounded"
               />
             </div>
           </div>

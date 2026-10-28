@@ -15,17 +15,17 @@ A clean, fast, mobile-friendly billing web app installable as a Progressive Web 
 
 ---
 
-## 🔑 Login Credentials (Pre-Seeded)
+## 🔑 Login & Password Security
 
-The database automatically seeds 3 ready-to-test accounts:
+The database seeds an owner, manager, and worker account on first run. Default credentials are **not shown on the login page**. If an account is still using a default password, the app automatically prompts for a new password after login.
 
-| Role | Username | Password | Permissions |
-| :--- | :--- | :--- | :--- |
-| **Owner (Admin)** | `owner` | `owner123` | Full access: bills, users, prices, customer dues, inventory valuation, stock adjustments, database backup download |
-| **Manager (Father)** | `manager` | `manager123` | Can create bills, view all records, edit bills, edit battery prices, add inward stock, view dashboard |
-| **Worker (Counter)** | `worker` | `worker123` | Counter billing: can create bills and view/edit **only bills generated on current day**. Cannot delete bills or manage accounts |
+| Role | Permissions |
+| :--- | :--- |
+| **Owner (Admin)** | Full access: bills, users, prices, customer dues, dealer khata, inventory valuation, stock adjustments, database backup download |
+| **Manager (Father)** | Can create bills, view all records, edit bills, edit battery prices, add inward stock, view dashboard |
+| **Worker (Counter)** | Counter billing: can create bills and view/edit **only bills generated on current day**. Cannot delete bills or manage accounts |
 
-*Tip: The login page includes convenient **1-tap test buttons** to quickly fill any account credentials.*
+Change your password any time from the header menu. Owners can also reset staff passwords from the Settings screen.
 
 ---
 
@@ -112,13 +112,16 @@ To send messages automatically in the background directly from Meta servers:
 ## 📋 Key Features & Modules
 
 ### 1. New Bill (Home Screen - Counter Speed Optimized)
+- **Multi-Item Bills**: Add any number of batteries and units to a single bill; each line keeps its own price, serial number, warranty, and exchange discount.
 - **10-Digit Mobile Auto-Recognition**: Typing a customer's 10-digit number instantly recognizes repeat customers, auto-fills their name, and displays previous purchase counts and outstanding dues!
+- **Vehicle & Village**: Store the customer's bike/vehicle number and village/town on every bill for easier identification and search.
 - **Battery Selector**: Filter pills (`Car`, `Bike`, `Inverter`, `Tractor`, `Truck`, `E-rickshaw`) and instant search across catalog models.
 - **Editable Unit Price**: Auto-fills default price, but counter staff can adjust price on the fly with instant subtotal recalculation.
 - **Old Battery Exchange**: One-tap toggle automatically applies exchange discounts and logs old scrap battery stock.
-- **Payment Modes**: Cash, UPI, Card, or Credit (Pay Later). Credit mode calculates balance due live.
+- **Flexible Payment**: Cash, UPI, Card, or Credit with any part-payment amount. Unpaid balance becomes customer due automatically.
+- **UPI QR on Counter**: Generates a scannable UPI QR with the bill amount and bill number (configure UPI ID in Settings).
 - **Double-Tap Protection**: Button locks during saving to prevent duplicate bill creation.
-- **Thermal & A4 Invoices**: Instant printable receipts with shop GSTIN, terms, warranty periods, and serial numbers.
+- **Thermal & A4 Invoices**: Instant printable receipts with shop logo, GSTIN, terms, warranty periods, serial numbers, UPI QR, and balance due.
 
 ### 2. Customer Dues (Owner / Authorized Manager)
 - Real-time ledger of all customer dues calculated from `total_purchases - total_paid`.
@@ -128,19 +131,30 @@ To send messages automatically in the background directly from Meta servers:
 - Full purchase and receipt ledger expandable right on the page.
 - Export to Excel/CSV and print-friendly sheet.
 
-### 3. Stock & Inventory Report (Owner / Authorized Manager)
+### 3. Dealer / Supplier Khata (Owner / Authorized Manager)
+- Track battery purchases from each dealer with total purchase value, payments made, and outstanding payable.
+- Record dealer payments in Cash, UPI, Card, or Credit.
+- Stock-in automatically creates a dealer if a new supplier name is entered.
+- Search, pending-only filter, and full dealer ledger (purchases + payments).
+
+### 4. Warranty Check (All Staff)
+- Search by battery serial number, customer mobile, or bill number.
+- Clearly shows **VALID** or **EXPIRED / NOT COVERED** with purchase date, expiry date, and days/months remaining.
+- Works correctly even when a bill contains multiple batteries.
+
+### 5. Stock & Inventory Report (Owner / Authorized Manager)
 - Complete stock valuation: opening stock, stock in, quantity sold, current stock, cost valuation, and potential retail sales value.
 - Color highlights: **Orange** for low stock ($current \le alert$), **Red** for zero/out of stock.
-- **Stock Inward**: Add supplier stock with cost price, supplier name, and invoice reference.
+- **Stock Inward**: Add supplier stock with cost price, dealer selection, total purchase cost, amount paid, and payment mode.
 - **Manual Stock Adjustment**: Adjust counts with mandatory reason logging for audits.
 - **Old Battery Scrap Stock**: Tracks scrap batteries returned by customers. Record scrap sales to dealers, track scrap revenue, and decrease scrap counts.
 - Top selling models and slow-moving models (no sales in 60+ days).
 
-### 4. Database Backups
+### 6. Database Backups
 - Automatic daily backup to `backups/backup-YYYY-MM-DD.sqlite`.
 - Owner can click **"Download Backup (.sqlite)"** from the Settings screen to download a copy directly to their device at any time.
 
-### 5. Multilingual Support
+### 7. Multilingual Support
 - Built-in UI dictionary supporting **English**, **मराठी (Marathi)**, and **हिंदी (Hindi)** with an instant toggle in the header.
 
 ---
@@ -175,15 +189,17 @@ Cost: ~$4–$5/month. Permanent SQLite persistence and highest speed.
    ```
    Proxy `location / { proxy_pass http://localhost:5001; }` and run `sudo certbot --nginx -d yourshopdomain.com`.
 
-### Option B: Render.com / Railway
-1. Push repo to GitHub.
-2. Connect repo to Render / Railway.
-3. Build command:
-   ```bash
-   npm install && cd client && npm install && npm run build && cd ..
-   ```
-4. Start command:
-   ```bash
-   node server/server.js
-   ```
-5. Attach a Persistent Disk mounted at `/data` so SQLite files persist across deploys.
+### Option B: Render.com (Blueprint deploy)
+1. Push the repo to GitHub.
+2. In Render, choose **New > Blueprint** and select the repo. The included `render.yaml` creates the web service and a 1 GB persistent disk automatically.
+3. The blueprint sets:
+   - Build command: `npm run build`
+   - Start command: `node server/server.js`
+   - Health check: `/api/health`
+   - Persistent disk mounted at `/var/data`
+   - `DATA_DIR=/var/data`, `DB_PATH=/var/data/mab_battery.sqlite`, `BACKUP_DIR=/var/data/backups`
+   - A randomly generated `JWT_SECRET`
+4. Deploy, open the Render URL, log in, and change the default passwords immediately.
+5. Verify persistence: after any redeploy, bills/customers/settings/dealers must still be present. Without a disk mounted at `/var/data`, SQLite data is lost on every deploy.
+
+> **Railway/VPS alternative:** mount a persistent volume and set the same `DATA_DIR`, `DB_PATH`, and `BACKUP_DIR` environment variables.

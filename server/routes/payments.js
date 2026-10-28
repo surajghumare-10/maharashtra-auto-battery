@@ -33,6 +33,21 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
     return res.status(404).json({ error: 'Customer not found' });
   }
 
+  // bills.balance_due is the single source of truth (payment allocation already
+  // increments bills.amount_paid). Never add the payments table on top of it.
+  const pendingRow = db.prepare(`
+    SELECT COALESCE(SUM(balance_due), 0) AS pending
+    FROM bills
+    WHERE customer_id = ? AND status != 'cancelled'
+  `).get(customer_id);
+  const pendingBefore = pendingRow ? pendingRow.pending : 0;
+
+  if (payAmount > pendingBefore) {
+    return res.status(400).json({
+      error: `Payment of ₹${payAmount.toLocaleString('en-IN')} exceeds the pending balance of ₹${pendingBefore.toLocaleString('en-IN')}.`
+    });
+  }
+
   const receiptNo = getNextReceiptNo();
 
   // Allocation transaction: apply to oldest unpaid bills first!
@@ -87,13 +102,12 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
 
   const paymentId = recordTransaction();
 
-  // Compute fresh balance
+  // Compute fresh balance from bills only
   const balanceRow = db.prepare(`
-    SELECT 
-      COALESCE(SUM(b.grand_total), 0) - (COALESCE(SUM(b.amount_paid), 0) + COALESCE((SELECT SUM(amount) FROM payments WHERE customer_id = ?), 0)) AS remaining_balance
-    FROM bills b
-    WHERE b.customer_id = ? AND b.status != 'cancelled'
-  `).get(customer_id, customer_id);
+    SELECT COALESCE(SUM(balance_due), 0) AS remaining_balance
+    FROM bills
+    WHERE customer_id = ? AND status != 'cancelled'
+  `).get(customer_id);
 
   const remainingBalance = Math.max(0, balanceRow ? balanceRow.remaining_balance : 0);
 

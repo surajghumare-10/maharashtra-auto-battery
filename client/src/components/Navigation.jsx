@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { FilePlus2, ReceiptText, Tag, AlertCircle, Boxes, LayoutDashboard, Settings } from 'lucide-react';
+import { FilePlus2, ReceiptText, Tag, AlertCircle, Boxes, LayoutDashboard, Settings, Store } from 'lucide-react';
 
 export default function Navigation({ activeTab, setActiveTab }) {
   const { isOwner, isManager, canViewDues, canViewInventory, t } = useAuth();
@@ -18,6 +18,13 @@ export default function Navigation({ activeTab, setActiveTab }) {
   if (canViewInventory) {
     navItems.push({ id: 'inventory', label: t.inventory, icon: Boxes });
   }
+
+  if (canViewDues) {
+    navItems.push({ id: 'dealers', label: 'Dealer Khata', icon: Store });
+  }
+
+  // Warranty check is available to all staff
+  navItems.push({ id: 'warranty', label: 'Warranty', icon: AlertCircle });
 
   if (isOwner || isManager) {
     navItems.push({ id: 'dashboard', label: t.dashboard, icon: LayoutDashboard });
@@ -55,8 +62,11 @@ export default function Navigation({ activeTab, setActiveTab }) {
       </nav>
 
       {/* Mobile Sticky Bottom Bar (Thumb-friendly for counter phone use) */}
-      <nav className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t-2 border-slate-300 z-40 shadow-lg print:hidden">
-        <div className="grid grid-flow-col auto-cols-fr h-16 px-1">
+      <nav
+        className="md:hidden fixed bottom-0 left-0 right-0 bg-white border-t-2 border-slate-300 z-40 shadow-lg print:hidden"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}
+      >
+        <div className="flex items-stretch h-16 px-1 overflow-x-auto scrollbar-none">
           {navItems.map((item) => {
             const Icon = item.icon;
             const isActive = activeTab === item.id;
@@ -65,14 +75,14 @@ export default function Navigation({ activeTab, setActiveTab }) {
                 key={item.id}
                 type="button"
                 onClick={() => setActiveTab(item.id)}
-                className={`flex flex-col items-center justify-center py-1 transition-colors active:scale-95 ${
+                className={`flex flex-col items-center justify-center py-1 px-1 min-w-[62px] flex-1 transition-colors active:scale-95 ${
                   isActive
                     ? 'text-accent-700 font-bold bg-blue-50/70 border-t-2 border-accent-700 -mt-[2px]'
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 <Icon className={`w-5 h-5 mb-0.5 ${isActive ? 'text-accent-700 stroke-[2.5]' : 'text-slate-500'}`} />
-                <span className="text-[10px] leading-tight text-center truncate max-w-[64px]">
+                <span className="text-[9px] leading-tight text-center whitespace-nowrap">
                   {item.label}
                 </span>
               </button>

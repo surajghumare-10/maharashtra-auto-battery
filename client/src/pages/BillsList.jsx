@@ -118,22 +118,60 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
 
   // Open Edit Modal
   const handleOpenEdit = (bill) => {
+    const items = (bill.items && bill.items.length > 0 ? bill.items : [{
+      battery_id: bill.battery_id,
+      brand: bill.battery_brand,
+      model_name: bill.battery_model,
+      type: bill.battery_type,
+      capacity_ah: bill.battery_capacity,
+      quantity: bill.quantity,
+      unit_price: bill.unit_price,
+      exchange_discount: bill.exchange_discount,
+      warranty_months: bill.warranty_months,
+      serial_number: bill.serial_number || ''
+    }]).map(i => ({
+      battery_id: i.battery_id,
+      brand: i.brand,
+      model_name: i.model_name,
+      type: i.type,
+      capacity_ah: i.capacity_ah,
+      quantity: i.quantity,
+      unit_price: i.unit_price,
+      exchange_discount: i.exchange_discount || 0,
+      warranty_months: i.warranty_months,
+      serial_number: i.serial_number || ''
+    }));
+
     setEditForm({
       id: bill.id,
       customer_name: bill.customer_name,
       customer_mobile: bill.customer_mobile,
-      quantity: bill.quantity,
-      unit_price: bill.unit_price,
+      vehicle_number: bill.vehicle_number || '',
+      village_name: bill.village_name || '',
       exchange_discount: bill.exchange_discount,
       manual_discount: bill.manual_discount,
       payment_mode: bill.payment_mode,
       amount_paid: bill.amount_paid,
-      warranty_months: bill.warranty_months,
-      serial_number: bill.serial_number || '',
-      notes: bill.notes || ''
+      notes: bill.notes || '',
+      items
     });
     setShowEditModal(true);
   };
+
+  const updateEditItem = (idx, field, value) => {
+    setEditForm(prev => ({
+      ...prev,
+      items: prev.items.map((item, i) => i === idx ? { ...item, [field]: value } : item)
+    }));
+  };
+
+  const editSubtotal = (editForm.items || []).reduce(
+    (sum, i) => sum + (parseFloat(i.unit_price) || 0) * (parseInt(i.quantity, 10) || 1), 0
+  );
+  const editExDiscount = (editForm.items || []).reduce(
+    (sum, i) => sum + (parseFloat(i.exchange_discount) || 0), 0
+  );
+  const editGrandTotal = Math.max(0, editSubtotal - editExDiscount - (parseFloat(editForm.manual_discount) || 0));
 
   // Submit Edit
   const handleSaveEdit = async (e) => {
@@ -208,11 +246,15 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       'Date': b.created_at,
       'Customer Name': b.customer_name,
       'Mobile': b.customer_mobile,
-      'Battery': `${b.battery_brand} ${b.battery_model}`,
-      'Type': b.battery_type,
-      'Capacity (Ah)': b.battery_capacity,
-      'Qty': b.quantity,
-      'Unit Price': b.unit_price,
+      'Vehicle Number': b.vehicle_number || '',
+      'Village': b.village_name || '',
+      'Battery': (b.items && b.items.length > 0)
+        ? b.items.map(i => `${i.brand} ${i.model_name} x${i.quantity}`).join(' + ')
+        : `${b.battery_brand} ${b.battery_model}`,
+      'Type': (b.items && b.items.length > 0) ? b.items.map(i => i.type).join(', ') : b.battery_type,
+      'Capacity (Ah)': (b.items && b.items.length > 0) ? b.items.map(i => i.capacity_ah).join(', ') : b.battery_capacity,
+      'Qty': (b.items && b.items.length > 0) ? b.items.reduce((s, i) => s + i.quantity, 0) : b.quantity,
+      'Unit Price': (b.items && b.items.length > 0) ? b.items.map(i => i.unit_price).join(', ') : b.unit_price,
       'Subtotal': b.subtotal,
       'Exchange Discount': b.exchange_discount,
       'Manual Discount': b.manual_discount,
@@ -407,11 +449,14 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                     </div>
 
                     <div className="text-xs text-slate-700 mt-0.5">
-                      {bill.battery_brand} {bill.battery_model} ({bill.battery_type}) x{bill.quantity}
-                      {bill.serial_number && (
-                        <span className="text-slate-500 font-mono ml-1">
-                          [SN: {bill.serial_number}]
-                        </span>
+                      {(bill.items && bill.items.length > 0
+                        ? bill.items.map(i => `${i.brand} ${i.model_name} x${i.quantity}`).join(' + ')
+                        : `${bill.battery_brand} ${bill.battery_model} x${bill.quantity}`)}
+                      {bill.vehicle_number && (
+                        <span className="text-slate-500 ml-1">• {bill.vehicle_number}</span>
+                      )}
+                      {bill.village_name && (
+                        <span className="text-slate-500 ml-1">• {bill.village_name}</span>
                       )}
                     </div>
                   </div>
@@ -475,6 +520,12 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                   <span className="text-slate-500 block text-[11px]">Customer:</span>
                   <strong className="text-slate-900">{selectedBill.customer_name}</strong>
                   <div className="text-slate-700">+91 {selectedBill.customer_mobile}</div>
+                  {selectedBill.vehicle_number && (
+                    <div className="text-slate-700 font-semibold">Vehicle: {selectedBill.vehicle_number}</div>
+                  )}
+                  {selectedBill.village_name && (
+                    <div className="text-slate-700 font-semibold">Village: {selectedBill.village_name}</div>
+                  )}
                 </div>
                 <div className="text-right">
                   <span className="text-slate-500 block text-[11px]">Billed Date:</span>
@@ -484,19 +535,37 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
               </div>
 
               {/* Item Info */}
-              <div className="border border-slate-200 rounded-lg p-3">
-                <div className="flex justify-between font-bold text-slate-900 text-sm">
-                  <span>{selectedBill.battery_brand} {selectedBill.battery_model}</span>
-                  <span>{formatCurrency(selectedBill.unit_price)} x {selectedBill.quantity}</span>
-                </div>
-                <div className="text-xs text-slate-600 mt-1">
-                  Type: {selectedBill.battery_type} ({selectedBill.battery_capacity}Ah) • Warranty: {selectedBill.warranty_months}m
-                </div>
-                {selectedBill.serial_number && (
-                  <div className="text-xs font-mono font-bold text-slate-800 mt-0.5">
-                    Serial No: {selectedBill.serial_number}
+              <div className="border border-slate-200 rounded-lg p-3 space-y-2">
+                {((selectedBill.items && selectedBill.items.length > 0) ? selectedBill.items : [{
+                  brand: selectedBill.battery_brand,
+                  model_name: selectedBill.battery_model,
+                  type: selectedBill.battery_type,
+                  capacity_ah: selectedBill.battery_capacity,
+                  quantity: selectedBill.quantity,
+                  unit_price: selectedBill.unit_price,
+                  warranty_months: selectedBill.warranty_months,
+                  serial_number: selectedBill.serial_number
+                }]).map((item, idx) => (
+                  <div key={idx} className={idx > 0 ? 'border-t border-slate-200 pt-2' : ''}>
+                    <div className="flex justify-between font-bold text-slate-900 text-sm gap-2">
+                      <span>{item.brand} {item.model_name}</span>
+                      <span>{formatCurrency(item.unit_price)} x {item.quantity}</span>
+                    </div>
+                    <div className="text-xs text-slate-600 mt-1">
+                      Type: {item.type} ({item.capacity_ah}Ah) • Warranty: {item.warranty_months}m
+                    </div>
+                    {item.serial_number && (
+                      <div className="text-xs font-mono font-bold text-slate-800 mt-0.5">
+                        Serial No: {item.serial_number}
+                      </div>
+                    )}
+                    {item.exchange_discount > 0 && (
+                      <div className="text-xs text-emerald-700 font-semibold mt-0.5">
+                        Exchange discount: -{formatCurrency(item.exchange_discount)}
+                      </div>
+                    )}
                   </div>
-                )}
+                ))}
               </div>
 
               {/* Pricing breakdown */}
@@ -650,36 +719,61 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
 
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Quantity</label>
+                  <label className="block font-bold text-slate-700 mb-0.5">Bike / Vehicle Number</label>
                   <input
-                    type="number"
-                    min={1}
-                    value={editForm.quantity}
-                    onChange={(e) => setEditForm({ ...editForm, quantity: e.target.value })}
-                    className="w-full h-9 px-2 border rounded font-semibold"
+                    type="text"
+                    value={editForm.vehicle_number || ''}
+                    onChange={(e) => setEditForm({ ...editForm, vehicle_number: e.target.value.toUpperCase() })}
+                    className="w-full h-9 px-2 border rounded font-semibold uppercase"
                   />
                 </div>
                 <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Unit Price (₹)</label>
+                  <label className="block font-bold text-slate-700 mb-0.5">Village / Town</label>
                   <input
-                    type="number"
-                    value={editForm.unit_price}
-                    onChange={(e) => setEditForm({ ...editForm, unit_price: e.target.value })}
+                    type="text"
+                    value={editForm.village_name || ''}
+                    onChange={(e) => setEditForm({ ...editForm, village_name: e.target.value })}
                     className="w-full h-9 px-2 border rounded font-semibold"
                   />
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Exchange Discount (₹)</label>
-                  <input
-                    type="number"
-                    value={editForm.exchange_discount}
-                    onChange={(e) => setEditForm({ ...editForm, exchange_discount: e.target.value })}
-                    className="w-full h-9 px-2 border rounded font-semibold"
-                  />
+              <div className="border border-slate-200 rounded-lg overflow-hidden">
+                <div className="bg-slate-800 text-white px-2.5 py-1.5 text-[11px] font-black uppercase">
+                  Bill Items ({(editForm.items || []).length})
                 </div>
+                <div className="divide-y divide-slate-200">
+                  {(editForm.items || []).map((item, idx) => (
+                    <div key={idx} className="p-2 space-y-1.5">
+                      <div className="font-bold text-slate-900 text-xs">{item.brand} {item.model_name} <span className="text-slate-500">({item.type} {item.capacity_ah}Ah)</span></div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600">Qty</label>
+                          <input type="number" min={1} value={item.quantity} onChange={(e) => updateEditItem(idx, 'quantity', e.target.value)} className="w-full h-8 px-1.5 border rounded text-xs font-bold" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600">Unit Price ₹</label>
+                          <input type="number" value={item.unit_price} onChange={(e) => updateEditItem(idx, 'unit_price', e.target.value)} className="w-full h-8 px-1.5 border rounded text-xs font-bold" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600">Warranty (m)</label>
+                          <input type="number" value={item.warranty_months} onChange={(e) => updateEditItem(idx, 'warranty_months', e.target.value)} className="w-full h-8 px-1.5 border rounded text-xs font-bold" />
+                        </div>
+                        <div>
+                          <label className="block text-[10px] font-bold text-slate-600">Exchange ₹</label>
+                          <input type="number" value={item.exchange_discount} onChange={(e) => updateEditItem(idx, 'exchange_discount', e.target.value)} className="w-full h-8 px-1.5 border rounded text-xs font-bold" />
+                        </div>
+                      </div>
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-600">Serial Number</label>
+                        <input type="text" value={item.serial_number} onChange={(e) => updateEditItem(idx, 'serial_number', e.target.value)} className="w-full h-8 px-1.5 border rounded text-xs font-mono font-bold uppercase" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block font-bold text-slate-700 mb-0.5">Special Discount (₹)</label>
                   <input
@@ -688,6 +782,11 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                     onChange={(e) => setEditForm({ ...editForm, manual_discount: e.target.value })}
                     className="w-full h-9 px-2 border rounded font-semibold"
                   />
+                </div>
+                <div className="flex flex-col justify-end text-[11px] font-bold">
+                  <div className="flex justify-between text-slate-600"><span>Subtotal:</span><span>{formatCurrency(editSubtotal)}</span></div>
+                  <div className="flex justify-between text-emerald-700"><span>Exchange:</span><span>-{formatCurrency(editExDiscount)}</span></div>
+                  <div className="flex justify-between text-slate-900 border-t mt-0.5 pt-0.5"><span>New Total:</span><span>{formatCurrency(editGrandTotal)}</span></div>
                 </div>
               </div>
 
@@ -711,27 +810,6 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                     type="number"
                     value={editForm.amount_paid}
                     onChange={(e) => setEditForm({ ...editForm, amount_paid: e.target.value })}
-                    className="w-full h-9 px-2 border rounded font-semibold"
-                  />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Serial Number</label>
-                  <input
-                    type="text"
-                    value={editForm.serial_number}
-                    onChange={(e) => setEditForm({ ...editForm, serial_number: e.target.value })}
-                    className="w-full h-9 px-2 border rounded font-mono font-semibold uppercase"
-                  />
-                </div>
-                <div>
-                  <label className="block font-bold text-slate-700 mb-0.5">Warranty (Months)</label>
-                  <input
-                    type="number"
-                    value={editForm.warranty_months}
-                    onChange={(e) => setEditForm({ ...editForm, warranty_months: e.target.value })}
                     className="w-full h-9 px-2 border rounded font-semibold"
                   />
                 </div>

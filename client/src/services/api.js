@@ -51,6 +51,7 @@ export const api = {
   createUser: (data) => apiRequest('/auth/users', 'POST', data),
   updateUser: (id, data) => apiRequest(`/auth/users/${id}`, 'PUT', data),
   resetPassword: (id, newPassword) => apiRequest(`/auth/users/${id}/reset-password`, 'PUT', { newPassword }),
+  changePassword: (currentPassword, newPassword) => apiRequest('/auth/change-password', 'PUT', { currentPassword, newPassword }),
   deleteUser: (id) => apiRequest(`/auth/users/${id}`, 'DELETE'),
 
   // Batteries
@@ -80,6 +81,18 @@ export const api = {
   updateBill: (id, data) => apiRequest(`/bills/${id}`, 'PUT', data),
   deleteBill: (id) => apiRequest(`/bills/${id}`, 'DELETE'),
   resendBillMessage: (id) => apiRequest(`/bills/${id}/resend-message`, 'POST'),
+  checkWarranty: (search) => apiRequest(`/bills/warranty-check?search=${encodeURIComponent(search)}`),
+
+  // Dealers / Suppliers (khata)
+  getSuppliers: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(`/suppliers${query ? '?' + query : ''}`);
+  },
+  getSupplierOptions: () => apiRequest('/suppliers/options'),
+  getSupplierDetail: (id) => apiRequest(`/suppliers/${id}`),
+  createSupplier: (data) => apiRequest('/suppliers', 'POST', data),
+  updateSupplier: (id, data) => apiRequest(`/suppliers/${id}`, 'PUT', data),
+  paySupplier: (id, data) => apiRequest(`/suppliers/${id}/payments`, 'POST', data),
 
   // Payments (Dues)
   recordPayment: (data) => apiRequest('/payments', 'POST', data),

@@ -5,7 +5,19 @@ const { authenticateToken, requireRole, requireInventoryAccess } = require('../a
 
 // POST /stock/add - Add Stock / Stock In (Owner / Manager)
 router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
-  const { battery_id, quantity, cost_price, supplier_name, reference_id, date, notes } = req.body;
+  const {
+    battery_id,
+    quantity,
+    cost_price,
+    supplier_id,
+    supplier_name,
+    reference_id,
+    date,
+    notes,
+    total_cost,
+    amount_paid,
+    payment_mode = 'Cash'
+  } = req.body;
 
   if (!battery_id || !quantity) {
     return res.status(400).json({ error: 'Battery model and quantity are required' });
@@ -21,7 +33,37 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
     return res.status(404).json({ error: 'Battery model not found' });
   }
 
-  const unitCost = cost_price !== undefined ? parseFloat(cost_price) : battery.cost_price;
+  const unitCost = cost_price !== undefined && !isNaN(parseFloat(cost_price))
+    ? Math.max(0, parseFloat(cost_price))
+    : battery.cost_price;
+
+  const purchaseTotal = total_cost !== undefined && total_cost !== '' && !isNaN(parseFloat(total_cost))
+    ? Math.max(0, parseFloat(total_cost))
+    : qty * unitCost;
+  const paidNow = amount_paid !== undefined && amount_paid !== '' && !isNaN(parseFloat(amount_paid))
+    ? Math.min(Math.max(0, parseFloat(amount_paid)), purchaseTotal)
+    : 0;
+  const balanceDue = Math.max(0, purchaseTotal - paidNow);
+
+  let dealerId = supplier_id ? Number(supplier_id) : null;
+  let dealerName = supplier_name ? supplier_name.trim() : null;
+
+  if (dealerId) {
+    const dealer = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(dealerId);
+    if (!dealer) {
+      return res.status(404).json({ error: 'Dealer / supplier not found' });
+    }
+    dealerName = dealer.name;
+  } else if (dealerName) {
+    const existing = db.prepare('SELECT * FROM suppliers WHERE LOWER(name) = LOWER(?)').get(dealerName);
+    if (existing) {
+      dealerId = existing.id;
+      dealerName = existing.name;
+    } else {
+      const created = db.prepare('INSERT INTO suppliers (name, notes) VALUES (?, ?)').run(dealerName, 'Auto-created from stock purchase');
+      dealerId = created.lastInsertRowid;
+    }
+  }
 
   const addTransaction = db.transaction(() => {
     // 1. Update battery current stock and optionally update default cost price
@@ -32,23 +74,44 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
       WHERE id = ?
     `).run(qty, unitCost, unitCost, battery.id);
 
-    // 2. Log stock movement
+    // 2. Log stock movement with dealer khata fields
     const movementDate = date || new Date().toISOString().replace('T', ' ').substring(0, 19);
     const result = db.prepare(`
       INSERT INTO stock_movements (
-        battery_id, type, quantity, cost_price, supplier_name, reference_id, reason, user_id, user_name, created_at
-      ) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?)
+        battery_id, type, quantity, cost_price, supplier_name, supplier_id, reference_id, reason,
+        total_cost, amount_paid, balance_due, user_id, user_name, created_at
+      ) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       battery.id,
       qty,
       unitCost,
-      supplier_name ? supplier_name.trim() : 'Supplier Inward',
+      dealerName || 'Supplier Inward',
+      dealerId,
       reference_id ? reference_id.trim() : null,
       notes ? notes.trim() : 'Stock Inward / Purchase',
+      purchaseTotal,
+      paidNow,
+      balanceDue,
       req.user.id,
       req.user.name,
       movementDate
     );
+
+    // 3. If any amount was paid now, record it against the dealer khata
+    if (paidNow > 0 && dealerId) {
+      db.prepare(`
+        INSERT INTO supplier_payments (supplier_id, amount, payment_mode, reference_no, notes, paid_by, paid_by_name)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        dealerId,
+        paidNow,
+        ['Cash', 'UPI', 'Bank Transfer', 'Cheque'].includes(payment_mode) ? payment_mode : 'Cash',
+        reference_id ? reference_id.trim() : null,
+        `Payment for stock purchase (${qty} x ${battery.brand} ${battery.model_name})`,
+        req.user.id,
+        req.user.name
+      );
+    }
 
     return result.lastInsertRowid;
   });
@@ -59,7 +122,9 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
   res.status(201).json({
     message: `Added ${qty} units to ${battery.brand} ${battery.model_name}`,
     battery: updatedBattery,
-    movementId
+    movementId,
+    dealer_id: dealerId,
+    purchase: { total_cost: purchaseTotal, amount_paid: paidNow, balance_due: balanceDue }
   });
 });
 

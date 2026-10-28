@@ -1,9 +1,9 @@
 const fs = require('fs');
 const path = require('path');
 
-const dataDir = path.join(__dirname, '..', '..', 'data');
-const backupsDir = path.join(__dirname, '..', '..', 'backups');
-const dbPath = path.join(dataDir, 'mab_battery.sqlite');
+const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
+const backupsDir = process.env.BACKUP_DIR || path.join(__dirname, '..', '..', 'backups');
+const dbPath = process.env.DB_PATH || path.join(dataDir, 'mab_battery.sqlite');
 
 function createBackup() {
   try {
