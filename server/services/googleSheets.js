@@ -1,5 +1,11 @@
-const { google } = require('googleapis');
+const crypto = require('crypto');
 const { db } = require('../db');
+
+const TOKEN_URL = 'https://oauth2.googleapis.com/token';
+const SHEETS_URL = 'https://sheets.googleapis.com/v4/spreadsheets';
+const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
+
+let tokenCache = null;
 
 function getSetting(key) {
   try {
@@ -20,7 +26,6 @@ function getConfig() {
 
   if (!sheetId || !clientEmail || !privateKey) return null;
 
-  // Handle escaped newlines from env/storage
   if (typeof privateKey === 'string') {
     privateKey = privateKey.replace(/\\n/g, '\n');
   }
@@ -34,27 +39,81 @@ function getConfig() {
   };
 }
 
+function base64url(value) {
+  return Buffer.from(value).toString('base64url');
+}
+
+async function getAccessToken(config) {
+  const cacheKey = `${config.clientEmail}:${config.sheetId}`;
+  if (tokenCache && tokenCache.key === cacheKey && tokenCache.expiresAt > Date.now() + 60000) {
+    return tokenCache.token;
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }));
+  const claim = base64url(JSON.stringify({
+    iss: config.clientEmail,
+    scope: SCOPE,
+    aud: TOKEN_URL,
+    iat: now,
+    exp: now + 3600
+  }));
+  const unsigned = `${header}.${claim}`;
+  const signature = crypto.createSign('RSA-SHA256').update(unsigned).sign(config.privateKey, 'base64url');
+  const assertion = `${unsigned}.${signature}`;
+
+  const response = await fetch(TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: new URLSearchParams({
+      grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+      assertion
+    })
+  });
+
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error_description || data.error || `Token request failed (${response.status})`);
+  }
+
+  tokenCache = {
+    key: cacheKey,
+    token: data.access_token,
+    expiresAt: Date.now() + (data.expires_in || 3600) * 1000
+  };
+  return data.access_token;
+}
+
+async function sheetsRequest(config, path, options = {}) {
+  const token = await getAccessToken(config);
+  const response = await fetch(`${SHEETS_URL}/${encodeURIComponent(config.sheetId)}${path}`, {
+    ...options,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {})
+    }
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.error?.message || `Sheets request failed (${response.status})`);
+  }
+  return data;
+}
+
 async function appendRow(sheetName, values) {
   const config = getConfig();
   if (!config) return { skipped: true };
 
   try {
-    const auth = new google.auth.JWT({
-      email: config.clientEmail,
-      key: config.privateKey,
-      scopes: ['https://www.googleapis.com/auth/spreadsheets']
-    });
-
-    const sheets = google.sheets({ version: 'v4', auth });
-    await sheets.spreadsheets.values.append({
-      spreadsheetId: config.sheetId,
-      range: `${sheetName}!A:ZZ`,
-      valueInputOption: 'USER_ENTERED',
-      insertDataOption: 'INSERT_ROWS',
-      requestBody: {
-        values: [values]
+    await sheetsRequest(
+      config,
+      `/values/${encodeURIComponent(`${sheetName}!A:ZZ`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ values: [values] })
       }
-    });
+    );
     return { ok: true };
   } catch (err) {
     console.error('Google Sheets sync error:', err.message);
@@ -62,39 +121,31 @@ async function appendRow(sheetName, values) {
   }
 }
 
-function ensureHeaders(sheetName, headers) {
+async function ensureHeaders(sheetName, headers) {
   const config = getConfig();
-  if (!config) return Promise.resolve({ skipped: true });
+  if (!config) return { skipped: true };
 
-  return new Promise((resolve) => {
-    (async () => {
-      try {
-        const auth = new google.auth.JWT({
-          email: config.clientEmail,
-          key: config.privateKey,
-          scopes: ['https://www.googleapis.com/auth/spreadsheets']
-        });
-        const sheets = google.sheets({ version: 'v4', auth });
-        const res = await sheets.spreadsheets.values.get({
-          spreadsheetId: config.sheetId,
-          range: `${sheetName}!A1:ZZ1`
-        });
-        const existing = res.data.values && res.data.values[0] ? res.data.values[0] : [];
-        if (existing.length === 0 || existing.join('|').toLowerCase() !== headers.join('|').toLowerCase()) {
-          await sheets.spreadsheets.values.update({
-            spreadsheetId: config.sheetId,
-            range: `${sheetName}!A1`,
-            valueInputOption: 'USER_ENTERED',
-            requestBody: { values: [headers] }
-          });
+  try {
+    const data = await sheetsRequest(
+      config,
+      `/values/${encodeURIComponent(`${sheetName}!A1:ZZ1`)}`
+    );
+    const existing = data.values && data.values[0] ? data.values[0] : [];
+    if (existing.length === 0 || existing.join('|').toLowerCase() !== headers.join('|').toLowerCase()) {
+      await sheetsRequest(
+        config,
+        `/values/${encodeURIComponent(`${sheetName}!A1`)}?valueInputOption=USER_ENTERED`,
+        {
+          method: 'PUT',
+          body: JSON.stringify({ values: [headers] })
         }
-        resolve({ ok: true });
-      } catch (err) {
-        console.error('Google Sheets header error:', err.message);
-        resolve({ ok: false, error: err.message });
-      }
-    })();
-  });
+      );
+    }
+    return { ok: true };
+  } catch (err) {
+    console.error('Google Sheets header error:', err.message);
+    return { ok: false, error: err.message };
+  }
 }
 
 const BILL_HEADERS = [
@@ -210,7 +261,6 @@ function syncPayment(payment, customer = {}) {
       new Date().toISOString()
     ];
 
-    // Append to same Bills sheet as requested
     appendRow(config.billsSheet, values).catch(() => {});
   } catch (err) {
     console.error('syncPayment error:', err.message);
