@@ -15,14 +15,21 @@ import {
   Save,
   AlertCircle,
   X,
-  Image as ImageIcon
+  Image as ImageIcon,
+  FileSpreadsheet
 } from 'lucide-react';
 
 export default function Settings() {
   const { user, isOwner, shopSettings, fetchSettings, t } = useAuth();
 
   const [activeSection, setActiveSection] = useState('shop');
-  const [formData, setFormData] = useState({});
+  const [formData, setFormData] = useState({
+    gsheets_enabled: 'false',
+    gsheets_sheet_id: '',
+    gsheets_client_email: '',
+    gsheets_private_key: '',
+    gsheets_bills_sheet: 'Bills'
+  });
   const [savingSettings, setSavingSettings] = useState(false);
   const [statusMsg, setStatusMsg] = useState('');
 
@@ -221,6 +228,7 @@ export default function Settings() {
           { id: 'shop', label: 'Shop Profile', icon: Store },
           { id: 'templates', label: 'Message Templates', icon: MessageSquare },
           { id: 'api_keys', label: 'WhatsApp & SMS Keys', icon: MessageSquare },
+          { id: 'sheets', label: 'Google Sheets Sync', icon: FileSpreadsheet },
           { id: 'users', label: 'Users & Permissions', icon: Users },
           { id: 'backup', label: 'Database Backup', icon: Database },
         ].map(tab => {
@@ -681,7 +689,87 @@ export default function Settings() {
         </div>
       )}
 
-      {/* TAB 5: DATABASE BACKUP */}
+      {/* TAB 5: GOOGLE SHEETS SYNC */}
+      {activeSection === 'sheets' && (
+        <form onSubmit={handleSaveSettings} className="bg-white border-2 border-slate-300 rounded-lg p-4 space-y-3.5 text-xs shadow-sm">
+          <div className="border-b pb-2">
+            <h3 className="text-sm font-black text-slate-900">Google Sheets Auto-Sync</h3>
+            <p className="text-[11px] text-slate-500 mt-0.5">
+              Automatically append every bill and payment to your own Google Sheet. 1 row per bill, payments added on the same Bills tab. Each shop can use their own sheet.
+            </p>
+          </div>
+
+          <div className="flex items-center space-x-2">
+            <input
+              id="gsheets_enabled"
+              type="checkbox"
+              checked={formData.gsheets_enabled === 'true'}
+              onChange={(e) => handleInputChange('gsheets_enabled', e.target.checked ? 'true' : 'false')}
+              className="w-4 h-4"
+            />
+            <label htmlFor="gsheets_enabled" className="font-bold text-slate-800">Enable Google Sheets Sync</label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Google Sheet ID *</label>
+              <input
+                type="text"
+                value={formData.gsheets_sheet_id || ''}
+                onChange={(e) => handleInputChange('gsheets_sheet_id', e.target.value)}
+                placeholder="e.g. 1AbC...XyZ"
+                className="w-full h-10 px-3 border border-slate-300 rounded font-mono text-xs"
+              />
+              <p className="text-[10px] text-slate-500 mt-0.5">From URL: docs.google.com/spreadsheets/d/<strong>SHEET_ID</strong>/edit</p>
+            </div>
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Bills Sheet Tab Name</label>
+              <input
+                type="text"
+                value={formData.gsheets_bills_sheet || 'Bills'}
+                onChange={(e) => handleInputChange('gsheets_bills_sheet', e.target.value)}
+                className="w-full h-10 px-3 border border-slate-300 rounded"
+              />
+            </div>
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-700 mb-1">Service Account Email *</label>
+            <input
+              type="email"
+              value={formData.gsheets_client_email || ''}
+              onChange={(e) => handleInputChange('gsheets_client_email', e.target.value)}
+              placeholder="mab-sheets-sync@project-id.iam.gserviceaccount.com"
+              className="w-full h-10 px-3 border border-slate-300 rounded font-mono text-xs"
+            />
+          </div>
+
+          <div>
+            <label className="block font-bold text-slate-700 mb-1">Service Account Private Key *</label>
+            <textarea
+              value={formData.gsheets_private_key || ''}
+              onChange={(e) => handleInputChange('gsheets_private_key', e.target.value)}
+              placeholder="-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
+              rows={6}
+              className="w-full px-3 py-2 border border-slate-300 rounded font-mono text-[10px]"
+            />
+            <p className="text-[10px] text-slate-500 mt-0.5">Paste the private_key from your downloaded service account JSON. Share the Sheet with this email as Editor.</p>
+          </div>
+
+          <div className="flex justify-end">
+            <button
+              type="submit"
+              disabled={savingSettings}
+              className="px-6 py-2 bg-emerald-700 hover:bg-emerald-800 text-white font-bold rounded-lg flex items-center space-x-2 disabled:opacity-60"
+            >
+              <Save className="w-4 h-4" />
+              <span>{savingSettings ? 'Saving...' : 'Save Google Sheets Settings'}</span>
+            </button>
+          </div>
+        </form>
+      )}
+
+      {/* TAB 6: DATABASE BACKUP */}
       {activeSection === 'backup' && (
         <div className="bg-white border-2 border-slate-300 rounded-lg p-4 space-y-4 text-xs shadow-sm">
           <div className="border-b pb-2">

@@ -2,6 +2,7 @@ const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
 const { authenticateToken, requireRole } = require('../auth');
+const { getConfig } = require('../services/googleSheets');
 
 // GET /settings (all authenticated staff can read shop details; secrets masked if not owner)
 router.get('/', authenticateToken, (req, res) => {
@@ -16,9 +17,14 @@ router.get('/', authenticateToken, (req, res) => {
     delete settings.whatsapp_access_token;
     delete settings.twilio_auth_token;
     delete settings.fast2sms_api_key;
+    if (settings.gsheets_private_key) settings.gsheets_private_key = '***MASKED***';
   }
 
-  res.json({ settings });
+  if (req.user.role !== 'owner' && settings.gsheets_private_key) {
+    settings.gsheets_private_key = settings.gsheets_private_key ? '***MASKED***' : '';
+  }
+
+  res.json({ settings, gsheetsConfigured: !!getConfig() });
 });
 
 // PUT /settings (Owner only)
@@ -48,8 +54,11 @@ router.put('/', authenticateToken, requireRole(['owner']), (req, res) => {
   for (const r of rows) {
     settings[r.key] = r.value;
   }
+  if (settings.gsheets_private_key) {
+    settings.gsheets_private_key = '***MASKED***';
+  }
 
-  res.json({ message: 'Settings updated successfully', settings });
+  res.json({ message: 'Settings updated successfully', settings, gsheetsConfigured: !!getConfig() });
 });
 
 module.exports = router;

@@ -3,6 +3,7 @@ const router = express.Router();
 const { db } = require('../db');
 const { authenticateToken, requireRole } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
+const { syncBill } = require('../services/googleSheets');
 
 function getNextBillNo() {
   const lastBill = db.prepare('SELECT id FROM bills ORDER BY id DESC LIMIT 1').get();
@@ -584,6 +585,12 @@ router.post('/', authenticateToken, async (req, res) => {
   }
 
   const finalBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(createdBillId);
+
+  try {
+    syncBill({ ...finalBill, created_by_name: req.user.name }, createdItems);
+  } catch (e) {
+    // non-blocking
+  }
 
   res.status(201).json({
     bill: { ...finalBill, items: createdItems },

@@ -1,8 +1,9 @@
 const express = require('express');
 const router = express.Router();
 const { db } = require('../db');
-const { authenticateToken, requireDuesAccess } = require('../auth');
+const { authenticateToken } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
+const { syncPayment } = require('../services/googleSheets');
 
 function getNextReceiptNo() {
   const lastPayment = db.prepare('SELECT id FROM payments ORDER BY id DESC LIMIT 1').get();
@@ -137,6 +138,12 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
   }
 
   const createdPayment = db.prepare('SELECT * FROM payments WHERE id = ?').get(paymentId);
+
+  try {
+    syncPayment(createdPayment, customer);
+  } catch (e) {
+    // non-blocking
+  }
 
   res.status(201).json({
     payment: createdPayment,
