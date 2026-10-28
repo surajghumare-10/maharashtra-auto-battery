@@ -21,12 +21,12 @@ export default function PrintInvoice({ bill, shopSettings, onClose }) {
       }] : []);
 
   const qrAmount = bill ? (bill.balance_due > 0 ? bill.balance_due : bill.grand_total) : 0;
-  const upiId = shopSettings?.upi_id;
+  const upiId = (shopSettings?.upi_id || '').trim();
   const payeeName = shopSettings?.upi_payee_name || shopSettings?.shop_name || 'Maharashtra Auto Battery';
 
   useEffect(() => {
     let cancelled = false;
-    if (!bill || !upiId || !qrAmount) {
+    if (!bill || !upiId || !qrAmount || qrAmount <= 0) {
       setQrDataUrl('');
       return;
     }

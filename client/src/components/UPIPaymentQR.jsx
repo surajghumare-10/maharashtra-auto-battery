@@ -9,12 +9,14 @@ export default function UPIPaymentQR({ amount, note = 'Battery Purchase', upiId,
   const [copied, setCopied] = useState(false);
 
   const payAmount = Math.max(0, Math.round(parseFloat(amount) || 0));
-  const upiLink = upiId
-    ? `upi://pay?pa=${encodeURIComponent(upiId)}&pn=${encodeURIComponent(payeeName || 'Shop')}&am=${payAmount}&cu=INR&tn=${encodeURIComponent(note)}`
+  const cleanUpi = (upiId || '').trim();
+  const upiLink = cleanUpi
+    ? `upi://pay?pa=${encodeURIComponent(cleanUpi)}&pn=${encodeURIComponent(payeeName || 'Shop')}&am=${payAmount}&cu=INR&tn=${encodeURIComponent(note)}`
     : '';
 
   useEffect(() => {
     let cancelled = false;
+    setError('');
     if (!upiLink || payAmount <= 0) {
       setDataUrl('');
       return;
@@ -26,9 +28,17 @@ export default function UPIPaymentQR({ amount, note = 'Battery Purchase', upiId,
       errorCorrectionLevel: 'M'
     })
       .then(url => { if (!cancelled) setDataUrl(url); })
-      .catch(err => { if (!cancelled) setError(err.message); });
+      .catch(err => { if (!cancelled) { setError(err?.message || 'QR generation failed'); setDataUrl(''); } });
     return () => { cancelled = true; };
   }, [upiLink, payAmount, size]);
+
+  if (!cleanUpi) {
+    return (
+      <div className="text-center text-xs font-semibold text-slate-500 p-3 border border-dashed border-slate-300 rounded-lg">
+        UPI ID is not configured. Add it in Settings to generate payment QR codes.
+      </div>
+    );
+  }
 
   if (!upiId) {
     return (
@@ -40,7 +50,7 @@ export default function UPIPaymentQR({ amount, note = 'Battery Purchase', upiId,
 
   const copyUpi = async () => {
     try {
-      await navigator.clipboard.writeText(upiId);
+      await navigator.clipboard.writeText(cleanUpi);
       setCopied(true);
       setTimeout(() => setCopied(false), 1500);
     } catch (e) {
@@ -81,7 +91,7 @@ export default function UPIPaymentQR({ amount, note = 'Battery Purchase', upiId,
         className="mt-1 inline-flex items-center space-x-1 text-xs font-bold text-accent-700 hover:text-accent-800"
       >
         {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
-        <span>{copied ? 'Copied!' : upiId}</span>
+        <span>{copied ? 'Copied!' : cleanUpi}</span>
       </button>
       <div className="text-[10px] text-slate-500 mt-0.5">{note}</div>
     </div>

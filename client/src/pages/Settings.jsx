@@ -350,14 +350,15 @@ export default function Settings() {
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-bold text-slate-700 mb-1">Shop UPI ID (for QR codes &amp; reminders)</label>
+              <label className="block font-bold text-slate-700 mb-1">UPI ID (for QR payments)</label>
               <input
                 type="text"
                 value={formData.upi_id || ''}
-                onChange={(e) => handleInputChange('upi_id', e.target.value)}
-                placeholder="e.g. shopname@okhdfcbank"
-                className="w-full h-10 px-3 border border-slate-300 rounded font-semibold"
+                onChange={(e) => handleInputChange('upi_id', e.target.value.trim())}
+                placeholder="e.g. yourname@upi"
+                className="w-full h-10 px-3 border border-slate-300 rounded font-mono"
               />
+              <p className="text-[10px] text-slate-500 mt-0.5">Enter your exact UPI ID (like mobile@ybl, name@okhdfcbank). No spaces.</p>
             </div>
             <div>
               <label className="block font-bold text-slate-700 mb-1">UPI Payee Name (shown in UPI apps)</label>
