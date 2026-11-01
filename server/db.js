@@ -6,7 +6,16 @@ const bcrypt = require('bcryptjs');
 types.setTypeParser(20, (value) => parseInt(value, 10));
 types.setTypeParser(1700, (value) => parseFloat(value));
 
-const connectionString = process.env.DATABASE_URL;
+function cleanConnectionString(value) {
+  if (!value) return '';
+  let cleaned = String(value).trim();
+  const quoted = (cleaned.startsWith('"') && cleaned.endsWith('"'))
+    || (cleaned.startsWith("'") && cleaned.endsWith("'"));
+  if (quoted) cleaned = cleaned.slice(1, -1).trim();
+  return cleaned;
+}
+
+const connectionString = cleanConnectionString(process.env.DATABASE_URL);
 if (!connectionString) {
   throw new Error('DATABASE_URL is required. Add your Supabase Postgres connection string to the environment.');
 }
