@@ -1,8 +1,7 @@
-const { db } = require('../db');
+const { getSetting: getCachedSetting } = require('../db');
 
 function getSetting(key) {
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-  return row ? row.value : '';
+  return getCachedSetting(key) || '';
 }
 
 function cleanIndianMobile(mobile) {

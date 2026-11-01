@@ -31,7 +31,7 @@ app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     shop: 'Maharashtra Auto Battery',
-    storage: process.env.DB_PATH ? 'persistent' : 'local',
+    storage: 'supabase-postgres',
     timestamp: new Date().toISOString()
   });
 });
@@ -73,14 +73,20 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: err.message || 'Internal Server Error' });
 });
 
-// Initialize database schema and start server
-initSchema();
-initAutoBackup();
+async function startServer() {
+  await initSchema();
+  initAutoBackup();
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`====================================================`);
-  console.log(`⚡ Maharashtra Auto Battery Server is running`);
-  console.log(`📍 URL: http://localhost:${PORT}`);
-  console.log(`🏪 Ready for counter operations`);
-  console.log(`====================================================`);
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`====================================================`);
+    console.log(`⚡ Maharashtra Auto Battery Server is running`);
+    console.log(`📍 URL: http://localhost:${PORT}`);
+    console.log(`🏪 Ready for counter operations`);
+    console.log(`====================================================`);
+  });
+}
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+  process.exit(1);
 });

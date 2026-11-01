@@ -1,25 +1,21 @@
 const express = require('express');
 const router = express.Router();
-const path = require('path');
 const fs = require('fs');
 const { authenticateToken, requireRole } = require('../auth');
-const { dbPath, createBackup, listBackups } = require('../services/backup');
+const { createBackup, listBackups } = require('../services/backup');
 
 // GET /backup/download - Download database backup file (Owner only)
-router.get('/download', authenticateToken, requireRole(['owner']), (req, res) => {
-  if (!fs.existsSync(dbPath)) {
-    return res.status(404).json({ error: 'Database file not found' });
+router.get('/download', authenticateToken, requireRole(['owner']), async (req, res) => {
+  const snapshot = await createBackup();
+  if (!snapshot || !fs.existsSync(snapshot.filePath)) {
+    return res.status(500).json({ error: 'Failed to create backup snapshot' });
   }
-
-  // Create immediate fresh snapshot to guarantee flush
-  const snapshot = createBackup();
-  const fileToDownload = snapshot ? snapshot.filePath : dbPath;
 
   const now = new Date();
   const dateStr = now.toISOString().split('T')[0];
-  const downloadName = `maharashtra_auto_battery_backup_${dateStr}.sqlite`;
+  const downloadName = `maharashtra_auto_battery_backup_${dateStr}.json`;
 
-  res.download(fileToDownload, downloadName, (err) => {
+  res.download(snapshot.filePath, downloadName, (err) => {
     if (err) {
       console.error('Download error:', err);
       if (!res.headersSent) {
@@ -30,8 +26,8 @@ router.get('/download', authenticateToken, requireRole(['owner']), (req, res) =>
 });
 
 // POST /backup/create - Trigger manual backup (Owner only)
-router.post('/create', authenticateToken, requireRole(['owner']), (req, res) => {
-  const result = createBackup();
+router.post('/create', authenticateToken, requireRole(['owner']), async (req, res) => {
+  const result = await createBackup();
   if (!result) {
     return res.status(500).json({ error: 'Failed to create backup' });
   }

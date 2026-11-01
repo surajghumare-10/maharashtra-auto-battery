@@ -20,7 +20,7 @@ function generateToken(user, rememberMe = false) {
   );
 }
 
-function authenticateToken(req, res, next) {
+async function authenticateToken(req, res, next) {
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
@@ -28,20 +28,25 @@ function authenticateToken(req, res, next) {
     return res.status(401).json({ error: 'Authentication required. Please log in.' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, decoded) => {
-    if (err) {
-      return res.status(403).json({ error: 'Session expired or invalid token. Please log in again.' });
-    }
+  let decoded;
+  try {
+    decoded = jwt.verify(token, JWT_SECRET);
+  } catch (err) {
+    return res.status(403).json({ error: 'Session expired or invalid token. Please log in again.' });
+  }
 
+  try {
     // Refresh user permissions from DB in case they were updated
-    const freshUser = db.prepare('SELECT id, username, name, role, can_view_dues, can_view_inventory FROM users WHERE id = ?').get(decoded.id);
+    const freshUser = await db.get('SELECT id, username, name, role, can_view_dues, can_view_inventory FROM users WHERE id = ?', decoded.id);
     if (!freshUser) {
       return res.status(401).json({ error: 'User account not found.' });
     }
 
     req.user = freshUser;
     next();
-  });
+  } catch (err) {
+    next(err);
+  }
 }
 
 function requireRole(allowedRoles) {

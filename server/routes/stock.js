@@ -1,10 +1,10 @@
 const express = require('express');
 const router = express.Router();
-const { db } = require('../db');
+const { db, nowSql } = require('../db');
 const { authenticateToken, requireRole, requireInventoryAccess } = require('../auth');
 
 // POST /stock/add - Add Stock / Stock In (Owner / Manager)
-router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
+router.post('/add', authenticateToken, requireRole(['owner', 'manager']), async (req, res) => {
   const {
     battery_id,
     quantity,
@@ -28,7 +28,7 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
     return res.status(400).json({ error: 'Quantity must be a positive integer' });
   }
 
-  const battery = db.prepare('SELECT * FROM batteries WHERE id = ?').get(Number(battery_id));
+  const battery = await db.get('SELECT * FROM batteries WHERE id = ?', Number(battery_id));
   if (!battery) {
     return res.status(404).json({ error: 'Battery model not found' });
   }
@@ -49,39 +49,32 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
   let dealerName = supplier_name ? supplier_name.trim() : null;
 
   if (dealerId) {
-    const dealer = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(dealerId);
+    const dealer = await db.get('SELECT * FROM suppliers WHERE id = ?', dealerId);
     if (!dealer) {
       return res.status(404).json({ error: 'Dealer / supplier not found' });
     }
     dealerName = dealer.name;
   } else if (dealerName) {
-    const existing = db.prepare('SELECT * FROM suppliers WHERE LOWER(name) = LOWER(?)').get(dealerName);
+    const existing = await db.get('SELECT * FROM suppliers WHERE LOWER(name) = LOWER(?)', dealerName);
     if (existing) {
       dealerId = existing.id;
       dealerName = existing.name;
     } else {
-      const created = db.prepare('INSERT INTO suppliers (name, notes) VALUES (?, ?)').run(dealerName, 'Auto-created from stock purchase');
+      const created = await db.run('INSERT INTO suppliers (name, notes) VALUES (?, ?)', dealerName, 'Auto-created from stock purchase');
       dealerId = created.lastInsertRowid;
     }
   }
 
-  const addTransaction = db.transaction(() => {
-    // 1. Update battery current stock and optionally update default cost price
-    db.prepare(`
+  const movementId = await db.transaction(async (tx) => {
+    await tx.run(`
       UPDATE batteries
       SET current_stock = current_stock + ?,
           cost_price = CASE WHEN ? > 0 THEN ? ELSE cost_price END
       WHERE id = ?
-    `).run(qty, unitCost, unitCost, battery.id);
+    `, qty, unitCost, unitCost, battery.id);
 
-    // 2. Log stock movement with dealer khata fields
-    const movementDate = date || new Date().toISOString().replace('T', ' ').substring(0, 19);
-    const result = db.prepare(`
-      INSERT INTO stock_movements (
-        battery_id, type, quantity, cost_price, supplier_name, supplier_id, reference_id, reason,
-        total_cost, amount_paid, balance_due, user_id, user_name, created_at
-      ) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    const createdAt = date ? '?' : nowSql;
+    const movementParams = [
       battery.id,
       qty,
       unitCost,
@@ -93,16 +86,21 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
       paidNow,
       balanceDue,
       req.user.id,
-      req.user.name,
-      movementDate
-    );
+      req.user.name
+    ];
+    if (date) movementParams.push(date);
+    const result = await tx.run(`
+      INSERT INTO stock_movements (
+        battery_id, type, quantity, cost_price, supplier_name, supplier_id, reference_id, reason,
+        total_cost, amount_paid, balance_due, user_id, user_name, created_at
+      ) VALUES (?, 'in', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${createdAt})
+    `, ...movementParams);
 
-    // 3. If any amount was paid now, record it against the dealer khata
     if (paidNow > 0 && dealerId) {
-      db.prepare(`
+      await tx.run(`
         INSERT INTO supplier_payments (supplier_id, amount, payment_mode, reference_no, notes, paid_by, paid_by_name)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-      `).run(
+      `,
         dealerId,
         paidNow,
         ['Cash', 'UPI', 'Bank Transfer', 'Cheque'].includes(payment_mode) ? payment_mode : 'Cash',
@@ -116,8 +114,7 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
     return result.lastInsertRowid;
   });
 
-  const movementId = addTransaction();
-  const updatedBattery = db.prepare('SELECT * FROM batteries WHERE id = ?').get(battery.id);
+  const updatedBattery = await db.get('SELECT * FROM batteries WHERE id = ?', battery.id);
 
   res.status(201).json({
     message: `Added ${qty} units to ${battery.brand} ${battery.model_name}`,
@@ -129,7 +126,7 @@ router.post('/add', authenticateToken, requireRole(['owner', 'manager']), (req, 
 });
 
 // POST /stock/adjust - Manual stock adjustment with MANDATORY reason (Owner / Manager)
-router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
+router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), async (req, res) => {
   const { battery_id, new_quantity, reason } = req.body;
 
   if (!battery_id || new_quantity === undefined) {
@@ -145,7 +142,7 @@ router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), (re
     return res.status(400).json({ error: 'New quantity must be zero or a positive number' });
   }
 
-  const battery = db.prepare('SELECT * FROM batteries WHERE id = ?').get(Number(battery_id));
+  const battery = await db.get('SELECT * FROM batteries WHERE id = ?', Number(battery_id));
   if (!battery) {
     return res.status(404).json({ error: 'Battery model not found' });
   }
@@ -155,13 +152,13 @@ router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), (re
     return res.status(400).json({ error: 'New quantity is same as current stock. No change needed.' });
   }
 
-  const adjustTransaction = db.transaction(() => {
-    db.prepare('UPDATE batteries SET current_stock = ? WHERE id = ?').run(targetQty, battery.id);
+  await db.transaction(async (tx) => {
+    await tx.run('UPDATE batteries SET current_stock = ? WHERE id = ?', targetQty, battery.id);
 
-    db.prepare(`
+    await tx.run(`
       INSERT INTO stock_movements (battery_id, type, quantity, reason, user_id, user_name)
       VALUES (?, 'adjustment', ?, ?, ?, ?)
-    `).run(
+    `,
       battery.id,
       diff,
       `Manual Adjustment (${battery.current_stock} -> ${targetQty}): ${reason.trim()}`,
@@ -170,9 +167,7 @@ router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), (re
     );
   });
 
-  adjustTransaction();
-
-  const updated = db.prepare('SELECT * FROM batteries WHERE id = ?').get(battery.id);
+  const updated = await db.get('SELECT * FROM batteries WHERE id = ?', battery.id);
   res.json({
     message: `Stock updated for ${battery.brand} ${battery.model_name} to ${targetQty}`,
     battery: updated
@@ -180,7 +175,7 @@ router.post('/adjust', authenticateToken, requireRole(['owner', 'manager']), (re
 });
 
 // GET /stock/movements - Stock history log
-router.get('/movements', authenticateToken, requireInventoryAccess, (req, res) => {
+router.get('/movements', authenticateToken, requireInventoryAccess, async (req, res) => {
   const { battery_id, type, startDate, endDate } = req.query;
 
   let query = `
@@ -202,40 +197,38 @@ router.get('/movements', authenticateToken, requireInventoryAccess, (req, res) =
   }
 
   if (startDate) {
-    query += ' AND date(sm.created_at) >= date(?)';
+    query += ' AND sm.created_at::date >= ?::date';
     params.push(startDate);
   }
 
   if (endDate) {
-    query += ' AND date(sm.created_at) <= date(?)';
+    query += ' AND sm.created_at::date <= ?::date';
     params.push(endDate);
   }
 
   query += ' ORDER BY sm.id DESC LIMIT 200';
 
-  const movements = db.prepare(query).all(...params);
+  const movements = await db.all(query, ...params);
   res.json({ movements });
 });
 
 // GET /stock/old-batteries - Old battery inventory summary & scrap sales
-router.get('/old-batteries', authenticateToken, requireInventoryAccess, (req, res) => {
-  // Current in-stock old batteries grouped by type & brand
-  const inStockSummary = db.prepare(`
+router.get('/old-batteries', authenticateToken, requireInventoryAccess, async (req, res) => {
+  const inStockSummary = await db.all(`
     SELECT battery_type, brand, COUNT(*) AS count
     FROM old_battery_stock
     WHERE status = 'in_stock'
     GROUP BY battery_type, brand
     ORDER BY count DESC
-  `).all();
+  `);
 
-  const totalInStock = db.prepare(`
+  const totalInStock = (await db.get(`
     SELECT COUNT(*) AS count FROM old_battery_stock WHERE status = 'in_stock'
-  `).get().count;
+  `)).count;
 
-  // Recent scrap sales
-  const scrapSales = db.prepare(`
+  const scrapSales = await db.all(`
     SELECT * FROM scrap_sales ORDER BY id DESC LIMIT 50
-  `).all();
+  `);
 
   res.json({
     inStockSummary,
@@ -245,7 +238,7 @@ router.get('/old-batteries', authenticateToken, requireInventoryAccess, (req, re
 });
 
 // POST /stock/old-batteries/scrap-sale - Record scrap sale of old batteries (Owner only)
-router.post('/old-batteries/scrap-sale', authenticateToken, requireRole(['owner']), (req, res) => {
+router.post('/old-batteries/scrap-sale', authenticateToken, requireRole(['owner']), async (req, res) => {
   const { scrap_dealer_name, count_to_sell, amount_received, payment_mode, notes } = req.body;
 
   if (!scrap_dealer_name || !count_to_sell || amount_received === undefined) {
@@ -255,17 +248,16 @@ router.post('/old-batteries/scrap-sale', authenticateToken, requireRole(['owner'
   const count = parseInt(count_to_sell, 10);
   const amount = parseFloat(amount_received);
 
-  const availableOldCount = db.prepare("SELECT COUNT(*) AS count FROM old_battery_stock WHERE status = 'in_stock'").get().count;
+  const availableOldCount = (await db.get("SELECT COUNT(*) AS count FROM old_battery_stock WHERE status = 'in_stock'")).count;
   if (count > availableOldCount) {
     return res.status(400).json({ error: `Cannot sell ${count} batteries. Only ${availableOldCount} old batteries currently in stock.` });
   }
 
-  const scrapTransaction = db.transaction(() => {
-    // 1. Record scrap sale
-    const saleRes = db.prepare(`
+  const saleId = await db.transaction(async (tx) => {
+    const saleRes = await tx.run(`
       INSERT INTO scrap_sales (scrap_dealer_name, total_batteries_count, amount_received, payment_mode, notes, sold_by, sold_by_name)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       scrap_dealer_name.trim(),
       count,
       amount,
@@ -275,22 +267,19 @@ router.post('/old-batteries/scrap-sale', authenticateToken, requireRole(['owner'
       req.user.name
     );
 
-    const saleId = saleRes.lastInsertRowid;
+    const newSaleId = saleRes.lastInsertRowid;
 
-    // 2. Mark oldest N old batteries as sold_as_scrap
-    const targetBatteries = db.prepare(`
+    const targetBatteries = await tx.all(`
       SELECT id FROM old_battery_stock WHERE status = 'in_stock' ORDER BY id ASC LIMIT ?
-    `).all(count);
+    `, count);
 
-    const updateStmt = db.prepare("UPDATE old_battery_stock SET status = 'sold_as_scrap', scrap_sale_id = ? WHERE id = ?");
     for (const b of targetBatteries) {
-      updateStmt.run(saleId, b.id);
+      await tx.run("UPDATE old_battery_stock SET status = 'sold_as_scrap', scrap_sale_id = ? WHERE id = ?", newSaleId, b.id);
     }
 
-    return saleId;
+    return newSaleId;
   });
 
-  const saleId = scrapTransaction();
   res.status(201).json({ message: `Recorded scrap sale of ${count} old batteries for ₹${amount}`, saleId });
 });
 

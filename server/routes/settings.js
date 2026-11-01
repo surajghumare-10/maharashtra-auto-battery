@@ -1,18 +1,17 @@
 const express = require('express');
 const router = express.Router();
-const { db } = require('../db');
+const { db, refreshSettingsCache } = require('../db');
 const { authenticateToken, requireRole } = require('../auth');
 const { getConfig } = require('../services/googleSheets');
 
 // GET /settings (all authenticated staff can read shop details; secrets masked if not owner)
-router.get('/', authenticateToken, (req, res) => {
-  const rows = db.prepare('SELECT key, value FROM settings').all();
+router.get('/', authenticateToken, async (req, res) => {
+  const rows = await db.all('SELECT key, value FROM settings');
   const settings = {};
   for (const r of rows) {
     settings[r.key] = r.value;
   }
 
-  // If worker, mask sensitive WhatsApp token / Twilio auth token
   if (req.user.role === 'worker') {
     delete settings.whatsapp_access_token;
     delete settings.twilio_auth_token;
@@ -28,28 +27,25 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 // PUT /settings (Owner only)
-router.put('/', authenticateToken, requireRole(['owner']), (req, res) => {
-  const updates = req.body; // { key: value, ... }
+router.put('/', authenticateToken, requireRole(['owner']), async (req, res) => {
+  const updates = req.body;
 
   if (!updates || typeof updates !== 'object') {
     return res.status(400).json({ error: 'Settings object is required' });
   }
 
-  const upsert = db.prepare(`
-    INSERT INTO settings (key, value)
-    VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value
-  `);
-
-  const updateTx = db.transaction(() => {
+  await db.transaction(async (tx) => {
     for (const [key, value] of Object.entries(updates)) {
-      upsert.run(key, String(value != null ? value : ''));
+      await tx.run(`
+        INSERT INTO settings (key, value)
+        VALUES (?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value
+      `, key, String(value != null ? value : ''));
     }
   });
+  await refreshSettingsCache();
 
-  updateTx();
-
-  const rows = db.prepare('SELECT key, value FROM settings').all();
+  const rows = await db.all('SELECT key, value FROM settings');
   const settings = {};
   for (const r of rows) {
     settings[r.key] = r.value;

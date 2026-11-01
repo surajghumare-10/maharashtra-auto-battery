@@ -8,7 +8,7 @@ A clean, fast, mobile-friendly billing web app installable as a Progressive Web 
 ## ⚡ Tech Stack
 - **Frontend**: React (Vite) + Tailwind CSS + Lucide Icons
 - **Backend**: Node.js + Express
-- **Database**: SQLite via the built-in `node:sqlite` module in WAL mode (no native addon build required)
+- **Database**: Supabase PostgreSQL (managed, persistent) via the `pg` driver
 - **Auth**: JWT with `bcryptjs`-hashed passwords & inactivity auto-logout
 - **Messaging**: Meta WhatsApp Cloud API (primary), Twilio / Fast2SMS (SMS fallback), and automatic pre-filled `wa.me` link (zero-cost free fallback)
 - **PWA**: Installable on Android & iOS (`manifest.json` + `sw.js` offline caching)
@@ -32,8 +32,9 @@ Change your password any time from the header menu. Owners can also reset staff 
 ## 🚀 Quick Start (Running Locally)
 
 ### 1. Prerequisites
-- Node.js 22.5 or newer (`--experimental-sqlite` is used on Node 22)
+- Node.js 22 or newer
 - npm
+- A Supabase project (Free plan is sufficient for a single shop)
 
 ### 2. Installation
 Clone or navigate to the project directory and install dependencies:
@@ -45,7 +46,20 @@ npm install
 cd client && npm install && cd ..
 ```
 
-### 3. Build & Run
+### 3. Configure Supabase
+Create a project at https://supabase.com, then copy the **Session pooler** connection string from Project Settings > Database.
+
+Create a local `.env` file:
+```bash
+PORT=5001
+JWT_SECRET=change-this-to-a-long-random-secret
+DATABASE_URL=postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres
+DATABASE_SSL=true
+```
+
+The server creates all tables and seeds the starter catalog/accounts automatically on first boot.
+
+### 4. Build & Run
 ```bash
 # Build the React frontend
 npm run build
@@ -151,8 +165,9 @@ To send messages automatically in the background directly from Meta servers:
 - Top selling models and slow-moving models (no sales in 60+ days).
 
 ### 6. Database Backups
-- Automatic daily backup to `backups/backup-YYYY-MM-DD.sqlite`.
-- Owner can click **"Download Backup (.sqlite)"** from the Settings screen to download a copy directly to their device at any time.
+- Supabase manages PostgreSQL backups according to your Supabase plan.
+- The app also creates a daily JSON snapshot in `backups/` while the instance is awake.
+- Owner can click **"Download JSON Export"** from the Settings screen for an immediate full-data export.
 
 ### 7. Multilingual Support
 - Built-in UI dictionary supporting **English**, **मराठी (Marathi)**, and **हिंदी (Hindi)** with an instant toggle in the header.
@@ -161,45 +176,22 @@ To send messages automatically in the background directly from Meta servers:
 
 ## 🌐 Deployment Guide
 
-### Option A: Small Cloud VPS (Recommended - e.g. Hetzner, DigitalOcean, Linode)
-Cost: ~$4–$5/month. Permanent SQLite persistence and highest speed.
-1. Create an Ubuntu droplet/server.
-2. Install Node.js:
-   ```bash
-   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-   sudo apt-get install -y nodejs git
-   ```
-3. Clone project and install:
-   ```bash
-   git clone <your-repo> mab-battery
-   cd mab-battery
-   npm install
-   cd client && npm install && npm run build && cd ..
-   ```
-4. Run continuously with PM2:
-   ```bash
-   sudo npm install -g pm2
-   pm2 start server/server.js --name "mab-battery"
-   pm2 startup
-   pm2 save
-   ```
-5. Set up free SSL with Nginx + Certbot:
-   ```bash
-   sudo apt install nginx certbot python3-certbot-nginx
-   ```
-   Proxy `location / { proxy_pass http://localhost:5001; }` and run `sudo certbot --nginx -d yourshopdomain.com`.
-
-### Option B: Render.com (Blueprint deploy)
-1. Push the repo to GitHub.
-2. In Render, choose **New > Blueprint** and select the repo. The included `render.yaml` creates the web service and a 1 GB persistent disk automatically.
-3. The blueprint sets:
+### Supabase + Render.com (current setup)
+1. Create a Supabase project. The app creates its own tables automatically.
+2. In Supabase, open **Project Settings > Database** and copy the **Session pooler** connection string.
+3. Push the repo to GitHub.
+4. In Render, create a **Web Service** from the repo (or deploy the included `render.yaml`).
+5. Set:
    - Build command: `npm run build`
-   - Start command: `node server/server.js`
+   - Start command: `npm start`
    - Health check: `/api/health`
-   - Persistent disk mounted at `/var/data`
-   - `DATA_DIR=/var/data`, `DB_PATH=/var/data/mab_battery.sqlite`, `BACKUP_DIR=/var/data/backups`
-   - A randomly generated `JWT_SECRET`
-4. Deploy, open the Render URL, log in, and change the default passwords immediately.
-5. Verify persistence: after any redeploy, bills/customers/settings/dealers must still be present. Without a disk mounted at `/var/data`, SQLite data is lost on every deploy.
+   - `DATABASE_URL` = your Supabase session-pooler URL
+   - `DATABASE_SSL` = `true`
+   - `JWT_SECRET` = a long random value
+6. Deploy, open the Render URL, log in, and change the default passwords immediately.
+7. Add a few inventory items, then restart/redeploy the Render service and confirm they are still present.
 
-> **Railway/VPS alternative:** mount a persistent volume and set the same `DATA_DIR`, `DB_PATH`, and `BACKUP_DIR` environment variables.
+> **Free plan note:** Render Free sleeps after inactivity and has no persistent disk. All shop data now lives in Supabase, so it survives restarts. Supabase Free pauses inactive projects after about a week, but data is retained.
+
+### VPS alternative
+Use the same Supabase `DATABASE_URL` on a VPS with PM2/Nginx. No local database disk is required.

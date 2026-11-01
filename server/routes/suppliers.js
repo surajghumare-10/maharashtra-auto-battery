@@ -4,7 +4,7 @@ const { db } = require('../db');
 const { authenticateToken, requireRole, requireDuesAccess } = require('../auth');
 
 // GET /suppliers - Dealer khata list with outstanding payables
-router.get('/', authenticateToken, requireDuesAccess, (req, res) => {
+router.get('/', authenticateToken, requireDuesAccess, async (req, res) => {
   const { search, pendingOnly } = req.query;
 
   let query = `
@@ -21,13 +21,13 @@ router.get('/', authenticateToken, requireDuesAccess, (req, res) => {
 
   if (search && search.trim()) {
     const term = `%${search.trim()}%`;
-    query += ' AND (s.name LIKE ? OR s.mobile LIKE ? OR s.city LIKE ? OR s.contact_person LIKE ?)';
+    query += ' AND (s.name ILIKE ? OR s.mobile LIKE ? OR s.city ILIKE ? OR s.contact_person ILIKE ?)';
     params.push(term, term, term, term);
   }
 
   query += ' ORDER BY s.name ASC';
 
-  const dealers = db.prepare(query).all(...params).map(d => ({
+  const dealers = (await db.all(query, ...params)).map(d => ({
     ...d,
     balance_due: Math.max(0, (d.total_purchased || 0) - (d.total_paid || 0))
   }));
@@ -52,32 +52,32 @@ router.get('/', authenticateToken, requireDuesAccess, (req, res) => {
 });
 
 // GET /suppliers/options - Lightweight dealer list for stock-entry dropdowns
-router.get('/options', authenticateToken, (req, res) => {
-  const suppliers = db.prepare(`
+router.get('/options', authenticateToken, async (req, res) => {
+  const suppliers = await db.all(`
     SELECT id, name, city, mobile FROM suppliers
     WHERE COALESCE(is_active, 1) = 1
     ORDER BY name ASC
-  `).all();
+  `);
   res.json({ suppliers });
 });
 
 // POST /suppliers - Add a dealer / supplier
-router.post('/', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
+router.post('/', authenticateToken, requireRole(['owner', 'manager']), async (req, res) => {
   const { name, contact_person, mobile, city, notes } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: 'Dealer / supplier name is required' });
   }
 
-  const existing = db.prepare('SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?)').get(name.trim());
+  const existing = await db.get('SELECT id FROM suppliers WHERE LOWER(name) = LOWER(?)', name.trim());
   if (existing) {
     return res.status(400).json({ error: 'A dealer with this name already exists' });
   }
 
-  const result = db.prepare(`
+  const result = await db.run(`
     INSERT INTO suppliers (name, contact_person, mobile, city, notes)
     VALUES (?, ?, ?, ?, ?)
-  `).run(
+  `,
     name.trim(),
     contact_person ? contact_person.trim() : null,
     mobile ? String(mobile).replace(/\D/g, '').slice(-10) : null,
@@ -85,14 +85,14 @@ router.post('/', authenticateToken, requireRole(['owner', 'manager']), (req, res
     notes ? notes.trim() : null
   );
 
-  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(result.lastInsertRowid);
+  const supplier = await db.get('SELECT * FROM suppliers WHERE id = ?', result.lastInsertRowid);
   res.status(201).json({ supplier });
 });
 
 // PUT /suppliers/:id - Edit dealer details
-router.put('/:id', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
+router.put('/:id', authenticateToken, requireRole(['owner', 'manager']), async (req, res) => {
   const supplierId = Number(req.params.id);
-  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  const supplier = await db.get('SELECT * FROM suppliers WHERE id = ?', supplierId);
 
   if (!supplier) {
     return res.status(404).json({ error: 'Dealer / supplier not found' });
@@ -103,11 +103,11 @@ router.put('/:id', authenticateToken, requireRole(['owner', 'manager']), (req, r
     return res.status(400).json({ error: 'Dealer / supplier name is required' });
   }
 
-  db.prepare(`
+  await db.run(`
     UPDATE suppliers
     SET name = ?, contact_person = ?, mobile = ?, city = ?, notes = ?
     WHERE id = ?
-  `).run(
+  `,
     name.trim(),
     contact_person !== undefined ? (contact_person ? contact_person.trim() : null) : supplier.contact_person,
     mobile !== undefined ? (mobile ? String(mobile).replace(/\D/g, '').slice(-10) : null) : supplier.mobile,
@@ -116,32 +116,32 @@ router.put('/:id', authenticateToken, requireRole(['owner', 'manager']), (req, r
     supplierId
   );
 
-  const updated = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  const updated = await db.get('SELECT * FROM suppliers WHERE id = ?', supplierId);
   res.json({ supplier: updated });
 });
 
 // GET /suppliers/:id - Dealer ledger (purchases + payments)
-router.get('/:id', authenticateToken, requireDuesAccess, (req, res) => {
+router.get('/:id', authenticateToken, requireDuesAccess, async (req, res) => {
   const supplierId = Number(req.params.id);
-  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  const supplier = await db.get('SELECT * FROM suppliers WHERE id = ?', supplierId);
 
   if (!supplier) {
     return res.status(404).json({ error: 'Dealer / supplier not found' });
   }
 
-  const purchases = db.prepare(`
+  const purchases = await db.all(`
     SELECT sm.*, b.brand, b.model_name, b.type AS battery_type, b.capacity_ah
     FROM stock_movements sm
     LEFT JOIN batteries b ON b.id = sm.battery_id
     WHERE sm.supplier_id = ? AND sm.type = 'in'
     ORDER BY sm.id DESC
-  `).all(supplierId);
+  `, supplierId);
 
-  const payments = db.prepare(`
+  const payments = await db.all(`
     SELECT * FROM supplier_payments
     WHERE supplier_id = ?
     ORDER BY id DESC
-  `).all(supplierId);
+  `, supplierId);
 
   const totalPurchased = purchases.reduce((sum, p) => sum + (p.total_cost || 0), 0);
   const totalPaid = payments.reduce((sum, p) => sum + (p.amount || 0), 0);
@@ -159,9 +159,9 @@ router.get('/:id', authenticateToken, requireDuesAccess, (req, res) => {
 });
 
 // POST /suppliers/:id/payments - Pay a dealer (full or part payment)
-router.post('/:id/payments', authenticateToken, requireDuesAccess, (req, res) => {
+router.post('/:id/payments', authenticateToken, requireDuesAccess, async (req, res) => {
   const supplierId = Number(req.params.id);
-  const supplier = db.prepare('SELECT * FROM suppliers WHERE id = ?').get(supplierId);
+  const supplier = await db.get('SELECT * FROM suppliers WHERE id = ?', supplierId);
 
   if (!supplier) {
     return res.status(404).json({ error: 'Dealer / supplier not found' });
@@ -179,13 +179,13 @@ router.post('/:id/payments', authenticateToken, requireDuesAccess, (req, res) =>
     return res.status(400).json({ error: 'Payment mode must be Cash, UPI, Bank Transfer, or Cheque' });
   }
 
-  const totalPurchased = db.prepare(`
+  const totalPurchased = (await db.get(`
     SELECT COALESCE(SUM(total_cost), 0) AS total FROM stock_movements
     WHERE supplier_id = ? AND type = 'in'
-  `).get(supplierId).total;
-  const totalPaid = db.prepare(`
+  `, supplierId)).total;
+  const totalPaid = (await db.get(`
     SELECT COALESCE(SUM(amount), 0) AS total FROM supplier_payments WHERE supplier_id = ?
-  `).get(supplierId).total;
+  `, supplierId)).total;
   const payable = Math.max(0, totalPurchased - totalPaid);
 
   if (payAmount > payable) {
@@ -194,10 +194,10 @@ router.post('/:id/payments', authenticateToken, requireDuesAccess, (req, res) =>
     });
   }
 
-  const result = db.prepare(`
+  const result = await db.run(`
     INSERT INTO supplier_payments (supplier_id, amount, payment_mode, reference_no, notes, paid_by, paid_by_name)
     VALUES (?, ?, ?, ?, ?, ?, ?)
-  `).run(
+  `,
     supplierId,
     payAmount,
     payment_mode,
@@ -207,7 +207,7 @@ router.post('/:id/payments', authenticateToken, requireDuesAccess, (req, res) =>
     req.user.name
   );
 
-  const payment = db.prepare('SELECT * FROM supplier_payments WHERE id = ?').get(result.lastInsertRowid);
+  const payment = await db.get('SELECT * FROM supplier_payments WHERE id = ?', result.lastInsertRowid);
 
   res.status(201).json({
     payment,

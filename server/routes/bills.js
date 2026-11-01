@@ -1,33 +1,31 @@
 const express = require('express');
 const router = express.Router();
-const { db } = require('../db');
+const { db, nowSql } = require('../db');
 const { authenticateToken, requireRole } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
 const { syncBill } = require('../services/googleSheets');
 
-function getNextBillNo() {
-  const lastBill = db.prepare('SELECT id FROM bills ORDER BY id DESC LIMIT 1').get();
+const todayDate = "(now() AT TIME ZONE 'Asia/Kolkata')::date";
+
+async function getNextBillNo() {
+  const lastBill = await db.get('SELECT id FROM bills ORDER BY id DESC LIMIT 1');
   const nextId = (lastBill ? lastBill.id : 0) + 1;
   return `MAB-${String(nextId).padStart(4, '0')}`;
 }
 
 function getTodayDateStr() {
-  const now = new Date();
-  const yyyy = now.getFullYear();
-  const mm = String(now.getMonth() + 1).padStart(2, '0');
-  const dd = String(now.getDate()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd}`;
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 }
 
 function getBillItems(billId) {
-  return db.prepare('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC').all(billId);
+  return db.all('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC', billId);
 }
 
-function attachItems(bills) {
+async function attachItems(bills) {
   if (!bills || bills.length === 0) return bills;
   const ids = bills.map(b => b.id);
   const placeholders = ids.map(() => '?').join(',');
-  const rows = db.prepare(`SELECT * FROM bill_items WHERE bill_id IN (${placeholders}) ORDER BY id ASC`).all(...ids);
+  const rows = await db.all(`SELECT * FROM bill_items WHERE bill_id IN (${placeholders}) ORDER BY id ASC`, ...ids);
   const map = new Map();
   for (const row of rows) {
     if (!map.has(row.bill_id)) map.set(row.bill_id, []);
@@ -43,10 +41,10 @@ function itemDescription(items) {
     .join(' + ');
 }
 
-function normalizeItems(rawItems, oldBatteryReturned, oldBatteryType, oldBatteryBrand, oldBatteryCondition) {
+async function normalizeItems(rawItems, oldBatteryReturned, oldBatteryType, oldBatteryBrand, oldBatteryCondition) {
   const items = [];
   for (const raw of rawItems) {
-    const battery = db.prepare('SELECT * FROM batteries WHERE id = ? AND is_active = 1').get(Number(raw.battery_id));
+    const battery = await db.get('SELECT * FROM batteries WHERE id = ? AND is_active = 1', Number(raw.battery_id));
     if (!battery) {
       const err = new Error(`Battery model ID ${raw.battery_id} is invalid or unavailable`);
       err.status = 400;
@@ -94,15 +92,14 @@ function normalizeItems(rawItems, oldBatteryReturned, oldBatteryType, oldBattery
 }
 
 // GET /bills - List bills with filters and search
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   const { search, startDate, endDate, paymentMode, batteryType, staffId, status = 'completed' } = req.query;
 
   let query = 'SELECT * FROM bills WHERE 1=1';
   const params = [];
 
-  // Worker role restriction: can view/edit ONLY bills created on current day!
   if (req.user.role === 'worker') {
-    query += " AND date(created_at) = date('now', 'localtime')";
+    query += ` AND created_at::date = ${todayDate}`;
   }
 
   if (status && status !== 'all') {
@@ -112,19 +109,19 @@ router.get('/', authenticateToken, (req, res) => {
 
   if (search && search.trim()) {
     const term = `%${search.trim()}%`;
-    query += ` AND (bill_no LIKE ? OR customer_name LIKE ? OR customer_mobile LIKE ?
-      OR serial_number LIKE ? OR vehicle_number LIKE ? OR village_name LIKE ?
-      OR id IN (SELECT bill_id FROM bill_items WHERE serial_number LIKE ?))`;
+    query += ` AND (bill_no ILIKE ? OR customer_name ILIKE ? OR customer_mobile LIKE ?
+      OR serial_number ILIKE ? OR vehicle_number ILIKE ? OR village_name ILIKE ?
+      OR id IN (SELECT bill_id FROM bill_items WHERE serial_number ILIKE ?))`;
     params.push(term, term, term, term, term, term, term);
   }
 
   if (startDate) {
-    query += ' AND date(created_at) >= date(?)';
+    query += ' AND created_at::date >= ?::date';
     params.push(startDate);
   }
 
   if (endDate) {
-    query += ' AND date(created_at) <= date(?)';
+    query += ' AND created_at::date <= ?::date';
     params.push(endDate);
   }
 
@@ -145,12 +142,12 @@ router.get('/', authenticateToken, (req, res) => {
 
   query += ' ORDER BY id DESC LIMIT 500';
 
-  const bills = db.prepare(query).all(...params);
-  res.json({ bills: attachItems(bills) });
+  const bills = await db.all(query, ...params);
+  res.json({ bills: await attachItems(bills) });
 });
 
 // GET /bills/warranty-check - Check battery warranty status by serial no, mobile, or bill no
-router.get('/warranty-check', authenticateToken, (req, res) => {
+router.get('/warranty-check', authenticateToken, async (req, res) => {
   const { search } = req.query;
   if (!search || !search.trim()) {
     return res.status(400).json({ error: 'Please enter a serial number, customer mobile, or bill number' });
@@ -158,9 +155,9 @@ router.get('/warranty-check', authenticateToken, (req, res) => {
 
   const term = search.trim();
   const cleanMob = term.replace(/\D/g, '').slice(-10);
+  const mobileSearch = /^\d{10}$/.test(term) ? cleanMob : '';
 
-  // 1. Match a specific serial number on a bill item (works for multi-item bills)
-  const itemMatch = db.prepare(`
+  const itemMatch = await db.get(`
     SELECT b.*, bi.serial_number AS item_serial, bi.warranty_months AS item_warranty,
            bi.brand AS item_brand, bi.model_name AS item_model, bi.type AS item_type,
            bi.capacity_ah AS item_capacity, bi.quantity AS item_quantity
@@ -168,22 +165,22 @@ router.get('/warranty-check', authenticateToken, (req, res) => {
     JOIN bills b ON b.id = bi.bill_id
     WHERE b.status != 'cancelled' AND LOWER(bi.serial_number) = LOWER(?)
     ORDER BY b.id DESC LIMIT 1
-  `).get(term);
+  `, term);
 
   let bill = itemMatch;
   let warrantyMonths = itemMatch ? itemMatch.item_warranty : null;
 
   if (!bill) {
-    bill = db.prepare(`
+    bill = await db.get(`
       SELECT * FROM bills
       WHERE status != 'cancelled'
         AND (
           LOWER(serial_number) = LOWER(?)
-          OR (length(?) = 10 AND customer_mobile = ?)
+          OR (customer_mobile = ? AND ? <> '')
           OR LOWER(bill_no) = LOWER(?)
         )
       ORDER BY id DESC LIMIT 1
-    `).get(term, cleanMob, cleanMob, term);
+    `, term, mobileSearch, mobileSearch, term);
     if (bill) warrantyMonths = bill.warranty_months;
   }
 
@@ -195,7 +192,6 @@ router.get('/warranty-check', authenticateToken, (req, res) => {
     });
   }
 
-  // Calculate warranty expiry date
   const billDate = new Date(bill.created_at);
   const expiryDate = new Date(billDate);
   expiryDate.setMonth(expiryDate.getMonth() + (warrantyMonths || 0));
@@ -206,7 +202,7 @@ router.get('/warranty-check', authenticateToken, (req, res) => {
   const daysRemaining = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
   const monthsRemaining = (daysRemaining / 30.4).toFixed(1);
 
-  const items = getBillItems(bill.id);
+  const items = await getBillItems(bill.id);
 
   res.json({
     found: true,
@@ -243,15 +239,14 @@ router.get('/warranty-check', authenticateToken, (req, res) => {
 });
 
 // GET /bills/:id
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   const billId = Number(req.params.id);
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
+  const bill = await db.get('SELECT * FROM bills WHERE id = ?', billId);
 
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
   }
 
-  // Worker check: if worker, only allow if bill is from today
   if (req.user.role === 'worker') {
     const billDate = bill.created_at.split(' ')[0];
     const today = getTodayDateStr();
@@ -260,21 +255,18 @@ router.get('/:id', authenticateToken, (req, res) => {
     }
   }
 
-  // Fetch edits audit trail
-  const edits = db.prepare(`
+  const edits = await db.all(`
     SELECT * FROM bill_edits WHERE bill_id = ? ORDER BY id DESC
-  `).all(billId);
+  `, billId);
 
-  // Fetch customer overall pending balance (source of truth: bills.balance_due)
-  const customerSummary = db.prepare(`
+  const customerSummary = await db.get(`
     SELECT COALESCE(SUM(balance_due), 0) AS overall_pending
     FROM bills
     WHERE customer_id = ? AND status != 'cancelled'
-  `).get(bill.customer_id);
+  `, bill.customer_id);
 
-  const items = getBillItems(billId);
+  const items = await getBillItems(billId);
 
-  // Construct instant WhatsApp link if needed
   const template = getSetting('msg_template_bill');
   const billMsg = renderTemplate(template, {
     bill_no: bill.bill_no,
@@ -329,7 +321,6 @@ router.post('/', authenticateToken, async (req, res) => {
     items: bodyItems
   } = req.body;
 
-  // 1. Validation
   if (!customer_name || !customer_name.trim()) {
     return res.status(400).json({ error: 'Customer name is required' });
   }
@@ -358,7 +349,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
   let items;
   try {
-    items = normalizeItems(rawItems, old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition);
+    items = await normalizeItems(rawItems, old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition);
   } catch (err) {
     return res.status(err.status || 400).json({ error: err.message });
   }
@@ -368,7 +359,6 @@ router.post('/', authenticateToken, async (req, res) => {
   const manDiscount = Math.max(0, parseFloat(manual_discount) || 0);
   const grandTotal = Math.max(0, subtotal - exDiscount - manDiscount);
 
-  // Flexible payment: part-payment allowed in ANY mode, remaining becomes credit.
   let paidAmount = 0;
   if (amount_paid !== undefined && amount_paid !== '' && amount_paid !== null) {
     paidAmount = Math.max(0, parseFloat(amount_paid) || 0);
@@ -383,13 +373,12 @@ router.post('/', authenticateToken, async (req, res) => {
   const validModes = ['Cash', 'UPI', 'Card', 'Credit'];
   const mode = validModes.includes(payment_mode) ? payment_mode : 'Cash';
 
-  // Check stock for every item (aggregate duplicates)
   const needed = new Map();
   for (const it of items) {
     needed.set(it.battery_id, (needed.get(it.battery_id) || 0) + it.quantity);
   }
   for (const [id, qty] of needed.entries()) {
-    const b = db.prepare('SELECT * FROM batteries WHERE id = ?').get(id);
+    const b = await db.get('SELECT * FROM batteries WHERE id = ?', id);
     if (!b) continue;
     if (b.current_stock < qty) {
       if (req.user.role === 'worker') {
@@ -405,34 +394,33 @@ router.post('/', authenticateToken, async (req, res) => {
     }
   }
 
-  // 2. Perform DB operations inside a synchronous transaction
-  const billNo = getNextBillNo();
+  const billNo = await getNextBillNo();
   const vNum = vehicle_number ? vehicle_number.trim().toUpperCase() : null;
   const vName = village_name ? village_name.trim() : null;
   const primary = items[0];
 
-  const createTransaction = db.transaction(() => {
-    // Upsert or fetch customer
-    let customer = db.prepare('SELECT id FROM customers WHERE mobile = ?').get(cleanMobile);
+  const createdBillId = await db.transaction(async (tx) => {
+    let customer = await tx.get('SELECT id FROM customers WHERE mobile = ?', cleanMobile);
     let customerId;
     if (customer) {
       customerId = customer.id;
-      db.prepare(`
+      await tx.run(`
         UPDATE customers
         SET name = ?,
             village = COALESCE(?, village),
             last_vehicle_number = COALESCE(?, last_vehicle_number),
-            updated_at = datetime('now', 'localtime')
+            updated_at = ${nowSql}
         WHERE id = ?
-      `).run(customer_name.trim(), vName, vNum, customerId);
+      `, customer_name.trim(), vName, vNum, customerId);
     } else {
-      const custRes = db.prepare("INSERT INTO customers (name, mobile, village, last_vehicle_number) VALUES (?, ?, ?, ?)")
-        .run(customer_name.trim(), cleanMobile, vName, vNum);
+      const custRes = await tx.run(
+        "INSERT INTO customers (name, mobile, village, last_vehicle_number) VALUES (?, ?, ?, ?)",
+        customer_name.trim(), cleanMobile, vName, vNum
+      );
       customerId = custRes.lastInsertRowid;
     }
 
-    // Insert bill (primary columns mirror first line item for compatibility)
-    const insertBill = db.prepare(`
+    const billRes = await tx.run(`
       INSERT INTO bills (
         bill_no, customer_id, customer_name, customer_mobile, vehicle_number, village_name,
         battery_id, battery_brand, battery_model, battery_type, battery_capacity,
@@ -448,9 +436,7 @@ router.post('/', authenticateToken, async (req, res) => {
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, 'pending'
       )
-    `);
-
-    const billRes = insertBill.run(
+    `,
       billNo, customerId, customer_name.trim(), cleanMobile, vNum, vName,
       primary.battery_id, primary.brand, primary.model_name, primary.type, primary.capacity_ah,
       primary.quantity, primary.unit_price, subtotal, old_battery_returned ? 1 : 0, old_battery_type || primary.type,
@@ -462,51 +448,31 @@ router.post('/', authenticateToken, async (req, res) => {
 
     const newBillId = billRes.lastInsertRowid;
 
-    const insertItem = db.prepare(`
-      INSERT INTO bill_items (
-        bill_id, battery_id, brand, model_name, type, capacity_ah, quantity,
-        unit_price, subtotal, exchange_discount, warranty_months, serial_number,
-        old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    const insertMovement = db.prepare(`
-      INSERT INTO stock_movements (battery_id, type, quantity, cost_price, reference_id, reason, user_id, user_name)
-      VALUES (?, 'sale', ?, ?, ?, 'Bill Sale', ?, ?)
-    `);
-
-    const insertOldBattery = db.prepare(`
-      INSERT INTO old_battery_stock (battery_type, brand, condition, source_bill_id, status)
-      VALUES (?, ?, ?, ?, 'in_stock')
-    `);
-
     for (const it of items) {
-      insertItem.run(
+      await tx.run(`
+        INSERT INTO bill_items (
+          bill_id, battery_id, brand, model_name, type, capacity_ah, quantity,
+          unit_price, subtotal, exchange_discount, warranty_months, serial_number,
+          old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
         newBillId, it.battery_id, it.brand, it.model_name, it.type, it.capacity_ah, it.quantity,
         it.unit_price, it.subtotal, it.exchange_discount, it.warranty_months, it.serial_number,
         it.old_battery_returned, it.old_battery_type, it.old_battery_brand, it.old_battery_condition
       );
 
-      // Deduct stock
-      db.prepare('UPDATE batteries SET current_stock = current_stock - ? WHERE id = ?').run(it.quantity, it.battery_id);
-      insertMovement.run(
-        it.battery_id,
-        -it.quantity,
-        it.battery.cost_price,
-        billNo,
-        req.user.id,
-        req.user.name
-      );
+      await tx.run('UPDATE batteries SET current_stock = current_stock - ? WHERE id = ?', it.quantity, it.battery_id);
+      await tx.run(`
+        INSERT INTO stock_movements (battery_id, type, quantity, cost_price, reference_id, reason, user_id, user_name)
+        VALUES (?, 'sale', ?, ?, ?, 'Bill Sale', ?, ?)
+      `, it.battery_id, -it.quantity, it.battery.cost_price, billNo, req.user.id, req.user.name);
 
-      // Track returned old battery stock (one row per physical battery)
       if (it.old_battery_returned) {
         for (let n = 0; n < it.quantity; n++) {
-          insertOldBattery.run(
-            it.old_battery_type || it.type,
-            it.old_battery_brand || 'Old Return',
-            it.old_battery_condition || 'Used',
-            newBillId
-          );
+          await tx.run(`
+            INSERT INTO old_battery_stock (battery_type, brand, condition, source_bill_id, status)
+            VALUES (?, ?, ?, ?, 'in_stock')
+          `, it.old_battery_type || it.type, it.old_battery_brand || 'Old Return', it.old_battery_condition || 'Used', newBillId);
         }
       }
     }
@@ -514,11 +480,9 @@ router.post('/', authenticateToken, async (req, res) => {
     return newBillId;
   });
 
-  const createdBillId = createTransaction();
-  const createdBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(createdBillId);
-  const createdItems = getBillItems(createdBillId);
+  const createdBill = await db.get('SELECT * FROM bills WHERE id = ?', createdBillId);
+  const createdItems = await getBillItems(createdBillId);
 
-  // 3. Automated Messaging & Notifications
   let customerMsgResult = { success: false, status: 'wa_link_ready' };
   let ownerMsgResult = { success: false };
 
@@ -548,16 +512,14 @@ router.post('/', authenticateToken, async (req, res) => {
   if (send_message) {
     try {
       customerMsgResult = await sendNotification(createdBill.customer_mobile, customerMsgText);
-      db.prepare('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?')
-        .run(customerMsgResult.status, customerMsgResult.error || null, createdBillId);
+      await db.run('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?',
+        customerMsgResult.status, customerMsgResult.error || null, createdBillId);
     } catch (err) {
       console.error('Customer message error:', err);
-      db.prepare("UPDATE bills SET whatsapp_status = 'failed', whatsapp_error = ? WHERE id = ?")
-        .run(err.message, createdBillId);
+      await db.run("UPDATE bills SET whatsapp_status = 'failed', whatsapp_error = ? WHERE id = ?", err.message, createdBillId);
       customerMsgResult = { success: false, status: 'failed', error: err.message, waMeUrl: customerWaMeUrl };
     }
 
-    // Send owner notification
     const ownerMobile = getSetting('owner_mobile');
     if (ownerMobile) {
       const ownerMsgTemplate = getSetting('msg_template_owner');
@@ -584,7 +546,7 @@ router.post('/', authenticateToken, async (req, res) => {
     customerMsgResult = { success: true, status: 'manual_wa_ready', waMeUrl: customerWaMeUrl };
   }
 
-  const finalBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(createdBillId);
+  const finalBill = await db.get('SELECT * FROM bills WHERE id = ?', createdBillId);
 
   try {
     syncBill({ ...finalBill, created_by_name: req.user.name }, createdItems);
@@ -604,9 +566,9 @@ router.post('/', authenticateToken, async (req, res) => {
 });
 
 // PUT /bills/:id - Edit bill (Owner/Manager anytime, Worker only if bill is from today)
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', authenticateToken, async (req, res) => {
   const billId = Number(req.params.id);
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
+  const bill = await db.get('SELECT * FROM bills WHERE id = ?', billId);
 
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
@@ -616,7 +578,6 @@ router.put('/:id', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Cannot edit a cancelled bill.' });
   }
 
-  // Worker permission check: can only edit today's bills
   if (req.user.role === 'worker') {
     const billDate = bill.created_at.split(' ')[0];
     const today = getTodayDateStr();
@@ -646,14 +607,12 @@ router.put('/:id', authenticateToken, (req, res) => {
     items: bodyItems
   } = req.body;
 
-  const existingItems = getBillItems(billId);
+  const existingItems = await getBillItems(billId);
 
-  // Build the updated item list
   let rawItems;
   if (Array.isArray(bodyItems) && bodyItems.length > 0) {
     rawItems = bodyItems;
   } else if (existingItems.length > 0) {
-    // Legacy partial edit: apply submitted fields to the first item only
     rawItems = existingItems.map((it, idx) => {
       if (idx !== 0) return it;
       return {
@@ -680,7 +639,7 @@ router.put('/:id', authenticateToken, (req, res) => {
 
   let newItems;
   try {
-    newItems = normalizeItems(
+    newItems = await normalizeItems(
       rawItems,
       oldReturned,
       old_battery_type || bill.old_battery_type,
@@ -706,75 +665,67 @@ router.put('/:id', authenticateToken, (req, res) => {
     return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
   }
 
-  const editTransaction = db.transaction(() => {
-    // 1. Restore stock for previous items and remove old-battery entries from this bill
+  await db.transaction(async (tx) => {
     for (const it of existingItems) {
       if (it.battery_id) {
-        db.prepare('UPDATE batteries SET current_stock = current_stock + ? WHERE id = ?').run(it.quantity, it.battery_id);
-        db.prepare(`
+        await tx.run('UPDATE batteries SET current_stock = current_stock + ? WHERE id = ?', it.quantity, it.battery_id);
+        await tx.run(`
           INSERT INTO stock_movements (battery_id, type, quantity, reference_id, reason, user_id, user_name)
           VALUES (?, 'adjustment', ?, ?, 'Bill Edit - Old Items Restored', ?, ?)
-        `).run(it.battery_id, it.quantity, bill.bill_no, req.user.id, req.user.name);
+        `, it.battery_id, it.quantity, bill.bill_no, req.user.id, req.user.name);
       }
     }
-    db.prepare('DELETE FROM old_battery_stock WHERE source_bill_id = ? AND status = ?').run(billId, 'in_stock');
-    db.prepare('DELETE FROM bill_items WHERE bill_id = ?').run(billId);
-
-    // 2. Insert updated items and deduct stock again
-    const insertItem = db.prepare(`
-      INSERT INTO bill_items (
-        bill_id, battery_id, brand, model_name, type, capacity_ah, quantity,
-        unit_price, subtotal, exchange_discount, warranty_months, serial_number,
-        old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-    const insertMovement = db.prepare(`
-      INSERT INTO stock_movements (battery_id, type, quantity, cost_price, reference_id, reason, user_id, user_name)
-      VALUES (?, 'sale', ?, ?, ?, 'Bill Edit - New Items', ?, ?)
-    `);
-    const insertOldBattery = db.prepare(`
-      INSERT INTO old_battery_stock (battery_type, brand, condition, source_bill_id, status)
-      VALUES (?, ?, ?, ?, 'in_stock')
-    `);
+    await tx.run('DELETE FROM old_battery_stock WHERE source_bill_id = ? AND status = ?', billId, 'in_stock');
+    await tx.run('DELETE FROM bill_items WHERE bill_id = ?', billId);
 
     for (const it of newItems) {
-      insertItem.run(
+      await tx.run(`
+        INSERT INTO bill_items (
+          bill_id, battery_id, brand, model_name, type, capacity_ah, quantity,
+          unit_price, subtotal, exchange_discount, warranty_months, serial_number,
+          old_battery_returned, old_battery_type, old_battery_brand, old_battery_condition
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `,
         billId, it.battery_id, it.brand, it.model_name, it.type, it.capacity_ah, it.quantity,
         it.unit_price, it.subtotal, it.exchange_discount, it.warranty_months, it.serial_number,
         it.old_battery_returned, it.old_battery_type, it.old_battery_brand, it.old_battery_condition
       );
-      db.prepare('UPDATE batteries SET current_stock = current_stock - ? WHERE id = ?').run(it.quantity, it.battery_id);
-      insertMovement.run(it.battery_id, -it.quantity, it.battery.cost_price, bill.bill_no, req.user.id, req.user.name);
+      await tx.run('UPDATE batteries SET current_stock = current_stock - ? WHERE id = ?', it.quantity, it.battery_id);
+      await tx.run(`
+        INSERT INTO stock_movements (battery_id, type, quantity, cost_price, reference_id, reason, user_id, user_name)
+        VALUES (?, 'sale', ?, ?, ?, 'Bill Edit - New Items', ?, ?)
+      `, it.battery_id, -it.quantity, it.battery.cost_price, bill.bill_no, req.user.id, req.user.name);
 
       if (it.old_battery_returned) {
         for (let n = 0; n < it.quantity; n++) {
-          insertOldBattery.run(
-            it.old_battery_type || it.type,
-            it.old_battery_brand || 'Old Return',
-            it.old_battery_condition || 'Used',
-            billId
-          );
+          await tx.run(`
+            INSERT INTO old_battery_stock (battery_type, brand, condition, source_bill_id, status)
+            VALUES (?, ?, ?, ?, 'in_stock')
+          `, it.old_battery_type || it.type, it.old_battery_brand || 'Old Return', it.old_battery_condition || 'Used', billId);
         }
       }
     }
 
-    // 3. Update customer (keep mobile-based recognition in sync)
-    let customer = db.prepare('SELECT id FROM customers WHERE mobile = ?').get(cleanMobile);
+    const customer = await tx.get('SELECT id FROM customers WHERE mobile = ?', cleanMobile);
     let customerId;
     const vNum = vehicle_number !== undefined ? (vehicle_number ? vehicle_number.trim().toUpperCase() : null) : bill.vehicle_number;
     const vName = village_name !== undefined ? (village_name ? village_name.trim() : null) : bill.village_name;
 
     if (customer) {
       customerId = customer.id;
-      db.prepare("UPDATE customers SET name = ?, village = COALESCE(?, village), last_vehicle_number = COALESCE(?, last_vehicle_number), updated_at = datetime('now', 'localtime') WHERE id = ?")
-        .run(customer_name.trim(), vName, vNum, customerId);
+      await tx.run(`
+        UPDATE customers SET name = ?, village = COALESCE(?, village),
+          last_vehicle_number = COALESCE(?, last_vehicle_number), updated_at = ${nowSql}
+        WHERE id = ?
+      `, customer_name.trim(), vName, vNum, customerId);
     } else {
-      const res = db.prepare("INSERT INTO customers (name, mobile, village, last_vehicle_number) VALUES (?, ?, ?, ?)")
-        .run(customer_name.trim(), cleanMobile, vName, vNum);
-      customerId = res.lastInsertRowid;
+      const custRes = await tx.run(
+        "INSERT INTO customers (name, mobile, village, last_vehicle_number) VALUES (?, ?, ?, ?)",
+        customer_name.trim(), cleanMobile, vName, vNum
+      );
+      customerId = custRes.lastInsertRowid;
     }
 
-    // 4. Build changes summary for audit trail
     const changes = [];
     if (customer_name !== bill.customer_name) changes.push(`Name: ${bill.customer_name} -> ${customer_name}`);
     if (cleanMobile !== bill.customer_mobile) changes.push(`Mobile: ${bill.customer_mobile} -> ${cleanMobile}`);
@@ -787,10 +738,10 @@ router.put('/:id', authenticateToken, (req, res) => {
     if (payment_mode !== bill.payment_mode) changes.push(`Mode: ${bill.payment_mode} -> ${payment_mode}`);
     const summary = changes.length > 0 ? changes.join('; ') : 'Details updated';
 
-    db.prepare(`
+    await tx.run(`
       INSERT INTO bill_edits (bill_id, edited_by, edited_by_name, changes_summary, previous_data, new_data)
       VALUES (?, ?, ?, ?, ?, ?)
-    `).run(
+    `,
       billId,
       req.user.id,
       req.user.name,
@@ -802,17 +753,16 @@ router.put('/:id', authenticateToken, (req, res) => {
       })) })
     );
 
-    // 5. Update bill
-    db.prepare(`
+    await tx.run(`
       UPDATE bills
       SET customer_id = ?, customer_name = ?, customer_mobile = ?, vehicle_number = ?, village_name = ?,
           battery_id = ?, battery_brand = ?, battery_model = ?, battery_type = ?, battery_capacity = ?,
           quantity = ?, unit_price = ?, subtotal = ?, old_battery_returned = ?,
           exchange_discount = ?, manual_discount = ?, grand_total = ?, payment_mode = ?,
           amount_paid = ?, balance_due = ?, warranty_months = ?, serial_number = ?, notes = ?,
-          updated_at = datetime('now', 'localtime')
+          updated_at = ${nowSql}
       WHERE id = ?
-    `).run(
+    `,
       customerId,
       customer_name.trim(),
       cleanMobile,
@@ -840,16 +790,14 @@ router.put('/:id', authenticateToken, (req, res) => {
     );
   });
 
-  editTransaction();
-
-  const updatedBill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
-  res.json({ bill: { ...updatedBill, items: getBillItems(billId) } });
+  const updatedBill = await db.get('SELECT * FROM bills WHERE id = ?', billId);
+  res.json({ bill: { ...updatedBill, items: await getBillItems(billId) } });
 });
 
 // DELETE /bills/:id - Cancel/Delete bill (Owner only)
-router.delete('/:id', authenticateToken, requireRole(['owner']), (req, res) => {
+router.delete('/:id', authenticateToken, requireRole(['owner']), async (req, res) => {
   const billId = Number(req.params.id);
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
+  const bill = await db.get('SELECT * FROM bills WHERE id = ?', billId);
 
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
@@ -859,34 +807,28 @@ router.delete('/:id', authenticateToken, requireRole(['owner']), (req, res) => {
     return res.status(400).json({ error: 'Bill is already cancelled' });
   }
 
-  const items = getBillItems(billId);
+  const items = await getBillItems(billId);
 
-  const cancelTransaction = db.transaction(() => {
-    // 1. Mark bill as cancelled
-    db.prepare("UPDATE bills SET status = 'cancelled', updated_at = datetime('now', 'localtime') WHERE id = ?").run(billId);
+  await db.transaction(async (tx) => {
+    await tx.run(`UPDATE bills SET status = 'cancelled', updated_at = ${nowSql} WHERE id = ?`, billId);
 
-    // 2. Return sold stock back to inventory for every item
     for (const it of items) {
       if (it.battery_id) {
-        db.prepare('UPDATE batteries SET current_stock = current_stock + ? WHERE id = ?').run(it.quantity, it.battery_id);
-        db.prepare(`
+        await tx.run('UPDATE batteries SET current_stock = current_stock + ? WHERE id = ?', it.quantity, it.battery_id);
+        await tx.run(`
           INSERT INTO stock_movements (battery_id, type, quantity, reference_id, reason, user_id, user_name)
           VALUES (?, 'cancel_reversal', ?, ?, 'Bill Cancellation Reversal', ?, ?)
-        `).run(it.battery_id, it.quantity, bill.bill_no, req.user.id, req.user.name);
+        `, it.battery_id, it.quantity, bill.bill_no, req.user.id, req.user.name);
       }
     }
 
-    // 3. Remove returned old battery stock from this bill
-    db.prepare("DELETE FROM old_battery_stock WHERE source_bill_id = ? AND status = 'in_stock'").run(billId);
+    await tx.run("DELETE FROM old_battery_stock WHERE source_bill_id = ? AND status = 'in_stock'", billId);
 
-    // 4. Audit trail
-    db.prepare(`
+    await tx.run(`
       INSERT INTO bill_edits (bill_id, edited_by, edited_by_name, changes_summary, previous_data, new_data)
       VALUES (?, ?, ?, 'Bill Cancelled and stock reversed', ?, '{"status":"cancelled"}')
-    `).run(billId, req.user.id, req.user.name, JSON.stringify({ ...bill, items }));
+    `, billId, req.user.id, req.user.name, JSON.stringify({ ...bill, items }));
   });
-
-  cancelTransaction();
 
   res.json({ message: `Bill ${bill.bill_no} cancelled successfully and stock restored.` });
 });
@@ -894,13 +836,13 @@ router.delete('/:id', authenticateToken, requireRole(['owner']), (req, res) => {
 // POST /bills/:id/resend-message - Resend WhatsApp / SMS message
 router.post('/:id/resend-message', authenticateToken, async (req, res) => {
   const billId = Number(req.params.id);
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
+  const bill = await db.get('SELECT * FROM bills WHERE id = ?', billId);
 
   if (!bill) {
     return res.status(404).json({ error: 'Bill not found' });
   }
 
-  const items = getBillItems(billId);
+  const items = await getBillItems(billId);
   const billDate = bill.created_at.split(' ')[0];
   const template = getSetting('msg_template_bill');
   const messageText = renderTemplate(template, {
@@ -924,8 +866,8 @@ router.post('/:id/resend-message', authenticateToken, async (req, res) => {
 
   try {
     const sendRes = await sendNotification(bill.customer_mobile, messageText);
-    db.prepare('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?')
-      .run(sendRes.status, sendRes.error || null, billId);
+    await db.run('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?',
+      sendRes.status, sendRes.error || null, billId);
 
     return res.json({
       status: sendRes.status,
@@ -934,8 +876,7 @@ router.post('/:id/resend-message', authenticateToken, async (req, res) => {
       error: sendRes.error
     });
   } catch (err) {
-    db.prepare("UPDATE bills SET whatsapp_status = 'failed', whatsapp_error = ? WHERE id = ?")
-      .run(err.message, billId);
+    await db.run("UPDATE bills SET whatsapp_status = 'failed', whatsapp_error = ? WHERE id = ?", err.message, billId);
 
     return res.json({
       status: 'failed',

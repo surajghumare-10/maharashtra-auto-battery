@@ -4,89 +4,84 @@ const { db } = require('../db');
 const { authenticateToken, requireRole, requireDuesAccess, requireInventoryAccess } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
 
+const todayDate = "(now() AT TIME ZONE 'Asia/Kolkata')::date";
+
 // GET /reports/dashboard - Overview metrics for Owner / Manager
-router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), (req, res) => {
-  // 1. Today's stats
-  const todayStats = db.prepare(`
+router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), async (req, res) => {
+  const todayStats = await db.get(`
     SELECT 
       COUNT(*) AS bill_count,
       COALESCE(SUM(grand_total), 0) AS total_sales,
       COALESCE(SUM(amount_paid), 0) AS total_collected,
       COALESCE(SUM(balance_due), 0) AS total_credit_given
     FROM bills
-    WHERE date(created_at) = date('now', 'localtime') AND status != 'cancelled'
-  `).get();
+    WHERE created_at::date = ${todayDate} AND status != 'cancelled'
+  `);
 
-  // Today's collections from previous dues payments
-  const todayPayments = db.prepare(`
+  const todayPayments = await db.get(`
     SELECT COALESCE(SUM(amount), 0) AS dues_collected
     FROM payments
-    WHERE date(created_at) = date('now', 'localtime')
-  `).get();
+    WHERE created_at::date = ${todayDate}
+  `);
 
-  // Payment mode split for today's bills
-  const modeSplits = db.prepare(`
+  const modeSplits = await db.all(`
     SELECT payment_mode, COUNT(*) as count, COALESCE(SUM(amount_paid), 0) as amount
     FROM bills
-    WHERE date(created_at) = date('now', 'localtime') AND status != 'cancelled'
+    WHERE created_at::date = ${todayDate} AND status != 'cancelled'
     GROUP BY payment_mode
-  `).all();
+  `);
 
-  // 2. All-time pending dues across all customers
-  const overallDues = db.prepare(`
+  const overallDues = await db.get(`
     SELECT COALESCE(SUM(balance_due), 0) AS total_pending_dues
     FROM bills
     WHERE status != 'cancelled'
-  `).get();
+  `);
 
-  // Total sales all time
-  const allTimeSales = db.prepare(`
+  const allTimeSales = await db.get(`
     SELECT COALESCE(SUM(grand_total), 0) AS total_sales_all_time, COUNT(*) as total_bills
     FROM bills
     WHERE status != 'cancelled'
-  `).get();
+  `);
 
-  // 3. Weekly sales (last 7 days)
-  const last7Days = db.prepare(`
+  const last7Days = await db.all(`
     SELECT 
-      date(created_at) as sale_date,
+      created_at::date as sale_date,
       COUNT(*) as bills_count,
       COALESCE(SUM(grand_total), 0) as daily_total
     FROM bills
-    WHERE date(created_at) >= date('now', 'localtime', '-6 days') AND status != 'cancelled'
-    GROUP BY date(created_at)
-    ORDER BY date(created_at) ASC
-  `).all();
+    WHERE created_at::date >= ${todayDate} - INTERVAL '6 days' AND status != 'cancelled'
+    GROUP BY created_at::date
+    ORDER BY sale_date ASC
+  `);
 
-  // 4. Monthly sales summary (last 6 months)
-  const monthlySales = db.prepare(`
+  const monthlySales = await db.all(`
     SELECT 
-      strftime('%Y-%m', created_at) as month,
+      to_char(created_at::timestamp, 'YYYY-MM') as month,
       COUNT(*) as bills_count,
       COALESCE(SUM(grand_total), 0) as monthly_total
     FROM bills
-    WHERE date(created_at) >= date('now', 'localtime', '-180 days') AND status != 'cancelled'
-    GROUP BY strftime('%Y-%m', created_at)
+    WHERE created_at::date >= ${todayDate} - INTERVAL '180 days' AND status != 'cancelled'
+    GROUP BY to_char(created_at::timestamp, 'YYYY-MM')
     ORDER BY month ASC
-  `).all();
+  `);
 
-  // 5. Low stock alerts count
-  const lowStockCount = db.prepare(`
+  const lowStockCount = (await db.get(`
     SELECT COUNT(*) as count
     FROM batteries
     WHERE is_active = 1 AND current_stock <= low_stock_alert
-  `).get().count;
+  `)).count;
 
-  // 6. Recent 5 bills
-  const recentBills = db.prepare(`
+  const recentBills = await db.all(`
     SELECT id, bill_no, customer_name, customer_mobile, vehicle_number, village_name, battery_brand, battery_model, grand_total, payment_mode, created_at, created_by_name
     FROM bills
     WHERE status != 'cancelled'
     ORDER BY id DESC LIMIT 5
-  `).all();
+  `);
 
-  const dashItemsStmt = db.prepare('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC');
-  const recentBillsWithItems = recentBills.map(b => ({ ...b, items: dashItemsStmt.all(b.id) }));
+  const recentBillsWithItems = await Promise.all(recentBills.map(async (b) => ({
+    ...b,
+    items: await db.all('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC', b.id)
+  })));
 
   res.json({
     today: {
@@ -110,7 +105,7 @@ router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), (
 });
 
 // GET /reports/dues - Customer Dues Page (Owner only, Manager if permitted)
-router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
+router.get('/dues', authenticateToken, requireDuesAccess, async (req, res) => {
   const { search, pendingOnly = 'false', sortBy = 'highestPending' } = req.query;
 
   let query = `
@@ -128,7 +123,7 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
   const params = [];
 
   if (search && search.trim()) {
-    query += ' AND (c.name LIKE ? OR c.mobile LIKE ? OR c.village LIKE ? OR c.last_vehicle_number LIKE ?)';
+    query += ' AND (c.name ILIKE ? OR c.mobile LIKE ? OR c.village ILIKE ? OR c.last_vehicle_number ILIKE ?)';
     const term = `%${search.trim()}%`;
     params.push(term, term, term, term);
   }
@@ -136,7 +131,7 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
   query += ' GROUP BY c.id';
 
   if (pendingOnly === 'true' || pendingOnly === true) {
-    query += ' HAVING pending_balance > 0';
+    query += ' HAVING COALESCE(SUM(b.balance_due), 0) > 0';
   }
 
   if (sortBy === 'highestPending') {
@@ -147,31 +142,29 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
     query += ' ORDER BY c.name ASC';
   }
 
-  const customers = db.prepare(query).all(...params);
+  const customers = await db.all(query, ...params);
 
-  // Summary strip calculation across all customers
-  const overallSummary = db.prepare(`
+  const overallSummary = await db.get(`
     SELECT 
       COALESCE(SUM(b.grand_total), 0) AS total_sales_all_time,
       COALESCE(SUM(b.amount_paid), 0) AS total_paid_all_time,
       COALESCE(SUM(b.balance_due), 0) AS total_pending_all_time
     FROM bills b
     WHERE b.status != 'cancelled'
-  `).get();
+  `);
 
   const totalSalesToDate = overallSummary.total_sales_all_time;
   const totalPendingAcrossAll = Math.max(0, overallSummary.total_pending_all_time);
 
-  // Count customers with dues > 0
-  const customersWithDues = db.prepare(`
+  const customersWithDues = (await db.get(`
     SELECT COUNT(*) as count FROM (
       SELECT c.id
       FROM customers c
       LEFT JOIN bills b ON b.customer_id = c.id AND b.status != 'cancelled'
       GROUP BY c.id
       HAVING COALESCE(SUM(b.balance_due), 0) > 0
-    )
-  `).get().count;
+    ) dues
+  `)).count;
 
   res.json({
     summary: {
@@ -186,18 +179,17 @@ router.get('/dues', authenticateToken, requireDuesAccess, (req, res) => {
 // POST /reports/dues/:customerId/send-reminder - Send payment due reminder
 router.post('/dues/:customerId/send-reminder', authenticateToken, requireDuesAccess, async (req, res) => {
   const customerId = Number(req.params.customerId);
-  const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
+  const customer = await db.get('SELECT * FROM customers WHERE id = ?', customerId);
 
   if (!customer) {
     return res.status(404).json({ error: 'Customer not found' });
   }
 
-  // Calculate balance
-  const balanceRow = db.prepare(`
+  const balanceRow = await db.get(`
     SELECT COALESCE(SUM(b.balance_due), 0) AS balance_due
     FROM bills b
     WHERE b.customer_id = ? AND b.status != 'cancelled'
-  `).get(customerId);
+  `, customerId);
 
   const balanceDue = Math.max(0, balanceRow ? balanceRow.balance_due : 0);
   if (balanceDue <= 0) {
@@ -237,10 +229,9 @@ router.post('/dues/:customerId/send-reminder', authenticateToken, requireDuesAcc
 });
 
 // GET /reports/inventory - Complete Inventory Report (Owner only, Manager if permitted)
-router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) => {
+router.get('/inventory', authenticateToken, requireInventoryAccess, async (req, res) => {
   const { startDate, endDate, type, search } = req.query;
 
-  // Fetch active battery models
   let baseQuery = 'SELECT * FROM batteries WHERE is_active = 1';
   const baseParams = [];
 
@@ -250,46 +241,42 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
   }
 
   if (search && search.trim()) {
-    baseQuery += ' AND (brand LIKE ? OR model_name LIKE ?)';
+    baseQuery += ' AND (brand ILIKE ? OR model_name ILIKE ?)';
     const term = `%${search.trim()}%`;
     baseParams.push(term, term);
   }
 
   baseQuery += ' ORDER BY type ASC, brand ASC, model_name ASC';
-  const batteries = db.prepare(baseQuery).all(...baseParams);
+  const batteries = await db.all(baseQuery, ...baseParams);
 
-  // Compute opening, stock in, sold for each model within date range if provided
-  const reportRows = batteries.map(b => {
+  const reportRows = await Promise.all(batteries.map(async (b) => {
     let soldQty = 0;
     let stockInQty = 0;
 
     if (startDate || endDate) {
-      // Stock sold in range (from bill items so multi-item bills count correctly)
       let soldQ = `
         SELECT COALESCE(SUM(bi.quantity), 0) as q
         FROM bill_items bi
         JOIN bills b ON b.id = bi.bill_id
         WHERE bi.battery_id = ? AND b.status != 'cancelled'`;
       const soldParams = [b.id];
-      if (startDate) { soldQ += ' AND date(b.created_at) >= date(?)'; soldParams.push(startDate); }
-      if (endDate) { soldQ += ' AND date(b.created_at) <= date(?)'; soldParams.push(endDate); }
-      soldQty = db.prepare(soldQ).get(...soldParams).q;
+      if (startDate) { soldQ += ' AND b.created_at::date >= ?::date'; soldParams.push(startDate); }
+      if (endDate) { soldQ += ' AND b.created_at::date <= ?::date'; soldParams.push(endDate); }
+      soldQty = (await db.get(soldQ, ...soldParams)).q;
 
-      // Stock In in range
-      let inQ = 'SELECT COALESCE(SUM(quantity), 0) as q FROM stock_movements WHERE battery_id = ? AND type = "in"';
+      let inQ = "SELECT COALESCE(SUM(quantity), 0) as q FROM stock_movements WHERE battery_id = ? AND type = 'in'";
       const inParams = [b.id];
-      if (startDate) { inQ += ' AND date(created_at) >= date(?)'; inParams.push(startDate); }
-      if (endDate) { inQ += ' AND date(created_at) <= date(?)'; inParams.push(endDate); }
-      stockInQty = db.prepare(inQ).get(...inParams).q;
+      if (startDate) { inQ += ' AND created_at::date >= ?::date'; inParams.push(startDate); }
+      if (endDate) { inQ += ' AND created_at::date <= ?::date'; inParams.push(endDate); }
+      stockInQty = (await db.get(inQ, ...inParams)).q;
     } else {
-      // All-time sold and in
-      soldQty = db.prepare(`
+      soldQty = (await db.get(`
         SELECT COALESCE(SUM(bi.quantity), 0) as q
         FROM bill_items bi
         JOIN bills b ON b.id = bi.bill_id
         WHERE bi.battery_id = ? AND b.status != 'cancelled'
-      `).get(b.id).q;
-      stockInQty = db.prepare("SELECT COALESCE(SUM(quantity), 0) as q FROM stock_movements WHERE battery_id = ? AND type = 'in'").get(b.id).q;
+      `, b.id)).q;
+      stockInQty = (await db.get("SELECT COALESCE(SUM(quantity), 0) as q FROM stock_movements WHERE battery_id = ? AND type = 'in'", b.id)).q;
     }
 
     const currentStock = b.current_stock;
@@ -320,27 +307,24 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
       is_low_stock: isLowStock,
       is_out_of_stock: isOutOfStock
     };
-  });
+  }));
 
-  // Summary strip
   const totalBatteriesInStock = reportRows.reduce((acc, r) => acc + r.current_stock, 0);
   const totalStockValueCost = reportRows.reduce((acc, r) => acc + r.stock_value_cost, 0);
   const totalPotentialSalesValue = reportRows.reduce((acc, r) => acc + r.stock_value_selling, 0);
   const lowStockModelsCount = reportRows.filter(r => r.is_low_stock || r.is_out_of_stock).length;
 
-  // Top selling models
-  const topSelling = db.prepare(`
+  const topSelling = await db.all(`
     SELECT b.brand, b.model_name, b.type, SUM(bi.quantity) AS total_sold, SUM(bi.subtotal) as revenue
     FROM bill_items bi
     JOIN bills bl ON bl.id = bi.bill_id
     JOIN batteries b ON b.id = bi.battery_id
     WHERE bl.status != 'cancelled'
-    GROUP BY bi.battery_id
+    GROUP BY b.brand, b.model_name, b.type, bi.battery_id
     ORDER BY total_sold DESC LIMIT 5
-  `).all();
+  `);
 
-  // Slow moving models (no sales in last 60 days)
-  const slowMoving = db.prepare(`
+  const slowMoving = await db.all(`
     SELECT b.id, b.brand, b.model_name, b.type, b.current_stock, ls.last_sale_date
     FROM batteries b
     LEFT JOIN (
@@ -351,21 +335,20 @@ router.get('/inventory', authenticateToken, requireInventoryAccess, (req, res) =
       GROUP BY bi.battery_id
     ) ls ON ls.battery_id = b.id
     WHERE b.is_active = 1
-      AND (ls.last_sale_date IS NULL OR date(ls.last_sale_date) < date('now', 'localtime', '-60 days'))
+      AND (ls.last_sale_date IS NULL OR ls.last_sale_date::date < ${todayDate} - INTERVAL '60 days')
     ORDER BY b.current_stock DESC LIMIT 10
-  `).all();
+  `);
 
-  // Old battery stock summary
-  const oldBatterySummary = db.prepare(`
+  const oldBatterySummary = await db.all(`
     SELECT battery_type, brand, COUNT(*) AS count
     FROM old_battery_stock
     WHERE status = 'in_stock'
     GROUP BY battery_type, brand
     ORDER BY count DESC
-  `).all();
+  `);
 
-  const totalOldBatteries = db.prepare("SELECT COUNT(*) AS count FROM old_battery_stock WHERE status = 'in_stock'").get().count;
-  const scrapRevenue = db.prepare("SELECT COALESCE(SUM(amount_received), 0) AS total_scrap FROM scrap_sales").get().total_scrap;
+  const totalOldBatteries = (await db.get("SELECT COUNT(*) AS count FROM old_battery_stock WHERE status = 'in_stock'")).count;
+  const scrapRevenue = (await db.get("SELECT COALESCE(SUM(amount_received), 0) AS total_scrap FROM scrap_sales")).total_scrap;
 
   res.json({
     summary: {

@@ -4,7 +4,7 @@ const { db } = require('../db');
 const { authenticateToken } = require('../auth');
 
 // GET /customers
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', authenticateToken, async (req, res) => {
   const { search } = req.query;
 
   let query = `
@@ -28,18 +28,18 @@ router.get('/', authenticateToken, (req, res) => {
 
   query += ' GROUP BY c.id ORDER BY c.updated_at DESC';
 
-  const customers = db.prepare(query).all(...params);
+  const customers = await db.all(query, ...params);
   res.json({ customers });
 });
 
 // GET /customers/lookup/:mobile - Auto lookup for New Bill screen
-router.get('/lookup/:mobile', authenticateToken, (req, res) => {
+router.get('/lookup/:mobile', authenticateToken, async (req, res) => {
   const mobile = String(req.params.mobile).replace(/\D/g, '').slice(-10);
   if (!mobile || mobile.length < 10) {
     return res.status(400).json({ error: 'Valid 10-digit mobile number required' });
   }
 
-  const customer = db.prepare(`
+  const customer = await db.get(`
     SELECT 
       c.id, c.name, c.mobile, c.address, c.village, c.last_vehicle_number,
       COALESCE(SUM(b.grand_total), 0) AS total_purchases,
@@ -49,31 +49,32 @@ router.get('/lookup/:mobile', authenticateToken, (req, res) => {
     LEFT JOIN bills b ON b.customer_id = c.id AND b.status != 'cancelled'
     WHERE c.mobile = ?
     GROUP BY c.id
-  `).get(mobile);
+  `, mobile);
 
   if (!customer) {
     return res.json({ found: false });
   }
 
-  // Get recent 3 bills for quick reference at counter
-  const recentBills = db.prepare(`
+  const recentBills = await db.all(`
     SELECT id, bill_no, battery_brand, battery_model, grand_total, balance_due, created_at, serial_number
     FROM bills
     WHERE customer_id = ? AND status != 'cancelled'
     ORDER BY id DESC LIMIT 3
-  `).all(customer.id);
+  `, customer.id);
 
-  const itemsStmt = db.prepare('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC');
-  const recentBillsWithItems = recentBills.map(b => ({ ...b, items: itemsStmt.all(b.id) }));
+  const recentBillsWithItems = await Promise.all(recentBills.map(async (b) => ({
+    ...b,
+    items: await db.all('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC', b.id)
+  })));
 
   res.json({ found: true, customer: { ...customer, recentBills: recentBillsWithItems } });
 });
 
 // GET /customers/:id - Customer profile with full bill & payment history
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', authenticateToken, async (req, res) => {
   const customerId = Number(req.params.id);
 
-  const customer = db.prepare(`
+  const customer = await db.get(`
     SELECT 
       c.id, c.name, c.mobile, c.address, c.village, c.last_vehicle_number, c.created_at,
       COALESCE(SUM(b.grand_total), 0) AS total_purchases,
@@ -83,30 +84,30 @@ router.get('/:id', authenticateToken, (req, res) => {
     LEFT JOIN bills b ON b.customer_id = c.id AND b.status != 'cancelled'
     WHERE c.id = ?
     GROUP BY c.id
-  `).get(customerId);
+  `, customerId);
 
   if (!customer) {
     return res.status(404).json({ error: 'Customer not found' });
   }
 
-  // All bills for customer
-  const bills = db.prepare(`
+  const bills = await db.all(`
     SELECT *
     FROM bills
     WHERE customer_id = ?
     ORDER BY id DESC
-  `).all(customerId);
+  `, customerId);
 
-  const itemsStmt = db.prepare('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC');
-  const billsWithItems = bills.map(b => ({ ...b, items: itemsStmt.all(b.id) }));
+  const billsWithItems = await Promise.all(bills.map(async (b) => ({
+    ...b,
+    items: await db.all('SELECT * FROM bill_items WHERE bill_id = ? ORDER BY id ASC', b.id)
+  })));
 
-  // All payments for customer
-  const payments = db.prepare(`
+  const payments = await db.all(`
     SELECT *
     FROM payments
     WHERE customer_id = ?
     ORDER BY id DESC
-  `).all(customerId);
+  `, customerId);
 
   res.json({
     customer,

@@ -1,20 +1,11 @@
 const crypto = require('crypto');
-const { db } = require('../db');
+const { getSetting } = require('../db');
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SHEETS_URL = 'https://sheets.googleapis.com/v4/spreadsheets';
 const SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 let tokenCache = null;
-
-function getSetting(key) {
-  try {
-    const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
-    return row ? row.value : null;
-  } catch (e) {
-    return null;
-  }
-}
 
 function getConfig() {
   const enabled = getSetting('gsheets_enabled');
@@ -243,7 +234,7 @@ function syncPayment(payment, customer = {}) {
   try {
     const config = getConfig();
     if (!config) return;
-    ensureHeaders(config.billsSheet, BILL_HEADERS).catch(() => {});
+    ensureHeaders(config.paymentsSheet, PAYMENT_HEADERS).catch(() => {});
 
     const created = payment.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
     const [date, time] = created.split(' ');
@@ -261,7 +252,7 @@ function syncPayment(payment, customer = {}) {
       new Date().toISOString()
     ];
 
-    appendRow(config.billsSheet, values).catch(() => {});
+    appendRow(config.paymentsSheet, values).catch(() => {});
   } catch (err) {
     console.error('syncPayment error:', err.message);
   }

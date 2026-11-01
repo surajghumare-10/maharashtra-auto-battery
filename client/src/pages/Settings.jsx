@@ -776,7 +776,7 @@ export default function Settings() {
           <div className="border-b pb-2">
             <h3 className="text-sm font-black text-slate-900">Database Backup & Recovery</h3>
             <p className="text-[11px] text-slate-500 mt-0.5">
-              The database automatically backs up daily to disk. You can also download a fresh copy (.sqlite) anytime.
+              Supabase manages the PostgreSQL database and its automatic backups. You can also export a fresh JSON snapshot anytime.
             </p>
           </div>
 
@@ -787,7 +787,7 @@ export default function Settings() {
               className="px-4 py-2.5 bg-accent-700 hover:bg-accent-800 text-white font-bold rounded-lg text-xs flex items-center space-x-2 shadow-sm"
             >
               <Download className="w-4 h-4" />
-              <span>Download Backup (.sqlite)</span>
+              <span>Download JSON Export</span>
             </button>
 
             <button

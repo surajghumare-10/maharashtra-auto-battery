@@ -1,29 +1,54 @@
 const fs = require('fs');
 const path = require('path');
+const { db } = require('../db');
 
-const dataDir = process.env.DATA_DIR || path.join(__dirname, '..', '..', 'data');
 const backupsDir = process.env.BACKUP_DIR || path.join(__dirname, '..', '..', 'backups');
-const dbPath = process.env.DB_PATH || path.join(dataDir, 'mab_battery.sqlite');
+const TABLES = [
+  'users',
+  'settings',
+  'batteries',
+  'customers',
+  'bills',
+  'bill_items',
+  'bill_edits',
+  'payments',
+  'stock_movements',
+  'old_battery_stock',
+  'scrap_sales',
+  'suppliers',
+  'supplier_payments'
+];
 
-function createBackup() {
+function ensureBackupsDir() {
+  if (!fs.existsSync(backupsDir)) {
+    fs.mkdirSync(backupsDir, { recursive: true });
+  }
+}
+
+async function createBackup() {
   try {
-    if (!fs.existsSync(dbPath)) {
-      return null;
-    }
-    if (!fs.existsSync(backupsDir)) {
-      fs.mkdirSync(backupsDir, { recursive: true });
-    }
+    ensureBackupsDir();
 
     const now = new Date();
     const dateStr = now.toISOString().split('T')[0];
     const timeStr = `${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}`;
-    const backupFileName = `backup-${dateStr}_${timeStr}.sqlite`;
+    const backupFileName = `backup-${dateStr}_${timeStr}.json`;
     const destPath = path.join(backupsDir, backupFileName);
 
-    fs.copyFileSync(dbPath, destPath);
-    console.log(`✓ Database backup created: ${backupFileName}`);
+    const tables = {};
+    for (const table of TABLES) {
+      tables[table] = await db.all(`SELECT * FROM ${table}`);
+    }
 
-    // Prune backups older than 14 days
+    const payload = {
+      app: 'maharashtra-auto-battery',
+      storage: 'supabase-postgres',
+      createdAt: now.toISOString(),
+      tables
+    };
+
+    fs.writeFileSync(destPath, JSON.stringify(payload, null, 2));
+    console.log(`✓ Database backup created: ${backupFileName}`);
     cleanOldBackups();
 
     return {
@@ -40,7 +65,7 @@ function createBackup() {
 
 function listBackups() {
   if (!fs.existsSync(backupsDir)) return [];
-  const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.sqlite'));
+  const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.json') || f.endsWith('.sqlite'));
   return files.map(file => {
     const fullPath = path.join(backupsDir, file);
     const stat = fs.statSync(fullPath);
@@ -55,7 +80,7 @@ function listBackups() {
 function cleanOldBackups(keepDays = 14) {
   try {
     if (!fs.existsSync(backupsDir)) return;
-    const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.sqlite'));
+    const files = fs.readdirSync(backupsDir).filter(f => f.endsWith('.json') || f.endsWith('.sqlite'));
     const now = Date.now();
     const maxAgeMs = keepDays * 24 * 60 * 60 * 1000;
 
@@ -71,18 +96,14 @@ function cleanOldBackups(keepDays = 14) {
   }
 }
 
-// Start daily backup schedule (every 24 hours)
 function initAutoBackup() {
-  // Run on startup
   createBackup();
-  // Schedule every 24 hours
   setInterval(() => {
     createBackup();
   }, 24 * 60 * 60 * 1000);
 }
 
 module.exports = {
-  dbPath,
   createBackup,
   listBackups,
   initAutoBackup
