@@ -12,6 +12,20 @@ if (!connectionString) {
 }
 
 const useSsl = process.env.DATABASE_SSL !== 'false';
+
+try {
+  const target = new URL(connectionString);
+  const decode = (value) => {
+    try { return decodeURIComponent(value || ''); } catch { return value || ''; }
+  };
+  console.log(
+    `DB target: host=${target.hostname} port=${target.port || '5432'} db=${target.pathname.replace(/^\//, '')} ` +
+    `user=${decode(target.username)} passwordLength=${decode(target.password).length} ssl=${useSsl}`
+  );
+} catch {
+  console.error('DB target: DATABASE_URL is not a valid connection URL');
+}
+
 const pool = new Pool({
   connectionString,
   ssl: useSsl ? { rejectUnauthorized: false } : false,
