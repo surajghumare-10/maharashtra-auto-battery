@@ -21,27 +21,46 @@ if (!connectionString) {
 }
 
 const useSsl = process.env.DATABASE_SSL !== 'false';
-
-try {
-  const target = new URL(connectionString);
-  const decode = (value) => {
-    try { return decodeURIComponent(value || ''); } catch { return value || ''; }
-  };
-  console.log(
-    `DB target: host=${target.hostname} port=${target.port || '5432'} db=${target.pathname.replace(/^\//, '')} ` +
-    `user=${decode(target.username)} passwordLength=${decode(target.password).length} ssl=${useSsl}`
-  );
-} catch {
-  console.error('DB target: DATABASE_URL is not a valid connection URL');
-}
-
-const pool = new Pool({
-  connectionString,
-  ssl: useSsl ? { rejectUnauthorized: false } : false,
+const poolDefaults = {
   max: Number(process.env.PG_POOL_MAX) || 10,
   idleTimeoutMillis: 30000,
   connectionTimeoutMillis: 15000
-});
+};
+
+function decodePart(value) {
+  try { return decodeURIComponent(value || ''); } catch { return value || ''; }
+}
+
+function buildPoolConfig(value) {
+  const ssl = useSsl ? { rejectUnauthorized: false } : false;
+  try {
+    const target = new URL(value);
+    const rawUser = decodePart(target.username);
+    const rawPassword = decodePart(target.password);
+    const user = rawUser.trim();
+    const password = rawPassword.trim();
+    const database = decodePart(target.pathname.replace(/^\//, '')) || 'postgres';
+    const port = Number(target.port) || 5432;
+    console.log(
+      `DB target: host=${target.hostname} port=${port} db=${database} ` +
+      `user=${user} passwordLength=${password.length} rawPasswordLength=${rawPassword.length} ssl=${useSsl}`
+    );
+    return {
+      ...poolDefaults,
+      host: target.hostname,
+      port,
+      database,
+      user,
+      password,
+      ssl
+    };
+  } catch {
+    console.error('DB target: DATABASE_URL is not a valid connection URL');
+    return { ...poolDefaults, connectionString: value, ssl };
+  }
+}
+
+const pool = new Pool(buildPoolConfig(connectionString));
 
 pool.on('error', (err) => {
   console.error('Unexpected PostgreSQL pool error:', err);
