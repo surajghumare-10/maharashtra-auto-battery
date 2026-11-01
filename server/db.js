@@ -445,35 +445,35 @@ async function seedInitialData() {
     twilio_auth_token: '',
     twilio_phone_number: '',
     fast2sms_api_key: '',
-    msg_template_bill: `Thank you for shopping at Maharashtra Auto Battery!
-Bill No: {bill_no}
-Date: {date}
-Customer: {customer_name}
-Battery: {battery_desc}
-Serial No: {serial_no}
-Old Battery Exchange: -₹{exchange_discount}
-Total Paid: ₹{amount_paid}
-Balance Due: ₹{balance_due}
-Payment Mode: {payment_mode}
-Warranty: {warranty_months} months
-Visit again!`,
-    msg_template_owner: `[NEW BILL] Maharashtra Auto Battery
-Bill: {bill_no} | Date: {date}
-Billed By: {created_by_name} ({created_by_role})
-Customer: {customer_name} ({customer_mobile})
-Item: {battery_desc}
-Total: ₹{grand_total} | Paid: ₹{amount_paid} | Mode: {payment_mode} | Due: ₹{balance_due}`,
-    msg_template_payment: `Payment Received - Maharashtra Auto Battery
-Receipt No: {receipt_no}
-Date: {date}
-Customer: {customer_name}
-Received: ₹{amount} ({payment_mode})
-Remaining Balance: {remaining_balance}
-Thank you!`,
-    msg_template_reminder: `Dear {customer_name}, greetings from Maharashtra Auto Battery.
-A friendly reminder that a pending balance of ₹{balance_due} is outstanding on your account.
-Kindly clear it at your earliest convenience via UPI ({upi_id}) or cash at our shop.
-Thank you! Ph: {shop_phone}`
+    msg_template_bill: `महाराष्ट्र ऑटो बॅटरी येथे खरेदी केल्याबद्दल धन्यवाद!
+बिल क्र.: {bill_no}
+दिनांक: {date}
+ग्राहक: {customer_name}
+बॅटरी: {battery_desc}
+सिरियल क्र.: {serial_no}
+जुनी बॅटरी एक्स्चेंज: -₹{exchange_discount}
+एकूण जमा: ₹{amount_paid}
+बाकी रक्कम: ₹{balance_due}
+पेमेंट पद्धत: {payment_mode}
+वॉरंटी: {warranty_months} महिने
+पुन्हा भेट द्या!`,
+    msg_template_owner: `[नवीन बिल] महाराष्ट्र ऑटो बॅटरी
+बिल: {bill_no} | दिनांक: {date}
+बिल काढणारे: {created_by_name} ({created_by_role})
+ग्राहक: {customer_name} ({customer_mobile})
+वस्तू: {battery_desc}
+एकूण: ₹{grand_total} | जमा: ₹{amount_paid} | पद्धत: {payment_mode} | बाकी: ₹{balance_due}`,
+    msg_template_payment: `पेमेंट मिळाले - महाराष्ट्र ऑटो बॅटरी
+पावती क्र.: {receipt_no}
+दिनांक: {date}
+ग्राहक: {customer_name}
+जमा रक्कम: ₹{amount} ({payment_mode})
+उर्वरित बाकी: {remaining_balance}
+धन्यवाद!`,
+    msg_template_reminder: `प्रिय {customer_name}, महाराष्ट्र ऑटो बॅटरीकडून नमस्कार.
+आपल्या खात्यावर ₹{balance_due} इतकी रक्कम बाकी आहे.
+कृपया योग्य वेळी UPI ({upi_id}) किंवा दुकानात रोख देऊन रक्कम भरून टाका.
+धन्यवाद! फोन: {shop_phone}`
   };
 
   for (const [key, value] of Object.entries(defaultSettings)) {
