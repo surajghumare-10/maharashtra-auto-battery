@@ -178,11 +178,11 @@ const PAYMENT_HEADERS = [
   'Synced At'
 ];
 
-function syncBill(bill, items = []) {
+async function syncBill(bill, items = []) {
   try {
     const config = getConfig();
     if (!config) return;
-    ensureHeaders(config.billsSheet, BILL_HEADERS).catch(() => {});
+    await ensureHeaders(config.billsSheet, BILL_HEADERS);
 
     const created = bill.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
     const [date, time] = created.split(' ');
@@ -224,17 +224,17 @@ function syncBill(bill, items = []) {
       new Date().toISOString()
     ];
 
-    appendRow(config.billsSheet, values).catch(() => {});
+    await appendRow(config.billsSheet, values);
   } catch (err) {
     console.error('syncBill error:', err.message);
   }
 }
 
-function syncPayment(payment, customer = {}) {
+async function syncPayment(payment, customer = {}) {
   try {
     const config = getConfig();
     if (!config) return;
-    ensureHeaders(config.paymentsSheet, PAYMENT_HEADERS).catch(() => {});
+    await ensureHeaders(config.paymentsSheet, PAYMENT_HEADERS);
 
     const created = payment.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
     const [date, time] = created.split(' ');
@@ -252,7 +252,7 @@ function syncPayment(payment, customer = {}) {
       new Date().toISOString()
     ];
 
-    appendRow(config.paymentsSheet, values).catch(() => {});
+    await appendRow(config.paymentsSheet, values);
   } catch (err) {
     console.error('syncPayment error:', err.message);
   }

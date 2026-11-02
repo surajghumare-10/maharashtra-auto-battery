@@ -146,11 +146,11 @@ router.get('/', authenticateToken, async (req, res) => {
   res.json({ bills: await attachItems(bills) });
 });
 
-// GET /bills/warranty-check - Check battery warranty status by serial no, mobile, or bill no
+// GET /bills/warranty-check - Check battery warranty status by serial no, mobile, bill no, or customer name
 router.get('/warranty-check', authenticateToken, async (req, res) => {
   const { search } = req.query;
   if (!search || !search.trim()) {
-    return res.status(400).json({ error: 'Please enter a serial number, customer mobile, or bill number' });
+    return res.status(400).json({ error: 'Please enter a serial number, customer name, mobile, or bill number' });
   }
 
   const term = search.trim();
@@ -171,16 +171,52 @@ router.get('/warranty-check', authenticateToken, async (req, res) => {
   let warrantyMonths = itemMatch ? itemMatch.item_warranty : null;
 
   if (!bill) {
-    bill = await db.get(`
+    const matchingBills = await db.all(`
       SELECT * FROM bills
       WHERE status != 'cancelled'
         AND (
           LOWER(serial_number) = LOWER(?)
           OR (customer_mobile = ? AND ? <> '')
           OR LOWER(bill_no) = LOWER(?)
+          OR customer_name ILIKE ?
         )
-      ORDER BY id DESC LIMIT 1
-    `, term, mobileSearch, mobileSearch, term);
+      ORDER BY id DESC LIMIT 25
+    `, term, mobileSearch, mobileSearch, term, `%${term}%`);
+
+    if (matchingBills.length > 1) {
+      const matches = [];
+      for (const candidate of matchingBills) {
+        const candidateItems = await getBillItems(candidate.id);
+        const months = candidate.warranty_months || (candidateItems[0] && candidateItems[0].warranty_months) || 0;
+        const purchase = new Date(candidate.created_at);
+        const expiry = new Date(purchase);
+        expiry.setMonth(expiry.getMonth() + months);
+        const under = new Date() <= expiry;
+        matches.push({
+          bill_no: candidate.bill_no,
+          customer_name: candidate.customer_name,
+          customer_mobile: candidate.customer_mobile,
+          purchaseDate: candidate.created_at.split(' ')[0],
+          expiryDate: expiry.toISOString().split('T')[0],
+          warrantyMonths: months,
+          isUnderWarranty: under,
+          status: under ? 'valid' : 'expired',
+          battery_desc: itemDescription(candidateItems),
+          serial_number: candidateItems.map(i => i.serial_number).filter(Boolean).join(', ') || candidate.serial_number || '',
+          grand_total: candidate.grand_total
+        });
+      }
+      return res.json({
+        found: true,
+        multiple: true,
+        count: matches.length,
+        search: term,
+        matches,
+        message: `${matches.length} bills found for "${term}". Select a bill to view full warranty details.`
+      });
+    }
+
+    bill = matchingBills[0] || null;
     if (bill) warrantyMonths = bill.warranty_months;
   }
 
@@ -188,7 +224,7 @@ router.get('/warranty-check', authenticateToken, async (req, res) => {
     return res.json({
       found: false,
       status: 'not_found',
-      message: `No bill found matching "${term}". Please verify the serial number or customer mobile.`
+      message: `No bill found matching "${term}". Please verify the serial number, customer name, or mobile number.`
     });
   }
 

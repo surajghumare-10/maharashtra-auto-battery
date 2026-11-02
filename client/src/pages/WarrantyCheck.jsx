@@ -15,7 +15,7 @@ export default function WarrantyCheck() {
   const checkValue = async (rawValue) => {
     const value = String(rawValue || '').trim();
     if (!value) {
-      setError('Enter a battery serial number, customer mobile, or bill number.');
+      setError('Enter a battery serial number, customer name, mobile, or bill number.');
       return;
     }
     setError('');
@@ -53,7 +53,7 @@ export default function WarrantyCheck() {
 
       <form onSubmit={handleCheck} className="bg-white border-2 border-slate-300 rounded-lg p-3 sm:p-4 shadow-sm mb-4">
         <label className="block text-xs font-black text-slate-700 uppercase mb-1">
-          Serial No / Customer Mobile / Bill No
+          Serial No / Customer Name / Mobile / Bill No
         </label>
         <div className="flex flex-col sm:flex-row gap-2">
           <div className="relative flex-1">
@@ -62,7 +62,7 @@ export default function WarrantyCheck() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="e.g. EX-88910, 9876543210, or MAB-0001"
+              placeholder="e.g. EX-88910, Suraj, 9876543210, or MAB-0001"
               className="w-full h-11 pl-9 pr-3 border-2 border-slate-300 rounded text-sm font-bold focus:border-accent-700 focus:outline-none"
             />
           </div>
@@ -113,7 +113,40 @@ export default function WarrantyCheck() {
         </div>
       )}
 
-      {result && result.found && (
+      {result && result.found && result.multiple && (
+        <div className="bg-white border-2 border-slate-300 rounded-lg shadow-sm overflow-hidden">
+          <div className="px-3 py-2 bg-slate-100 border-b border-slate-300">
+            <div className="text-sm font-black text-slate-900">{result.count} Bills Found</div>
+            <p className="text-[11px] text-slate-600 font-semibold">{result.message}</p>
+          </div>
+          <div className="divide-y divide-slate-200">
+            {result.matches.map((m) => (
+              <button
+                key={m.bill_no}
+                type="button"
+                onClick={() => { setSearch(m.bill_no); checkValue(m.bill_no); }}
+                className="w-full text-left px-3 py-2.5 hover:bg-slate-50"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-black text-slate-900">{m.bill_no} · {m.customer_name}</span>
+                  <span className={`text-[10px] font-black uppercase px-1.5 py-0.5 rounded ${m.isUnderWarranty ? 'bg-emerald-100 text-emerald-800' : 'bg-red-100 text-red-700'}`}>
+                    {m.isUnderWarranty ? 'Valid' : 'Expired'}
+                  </span>
+                </div>
+                <div className="text-[11px] text-slate-600 font-semibold mt-0.5 truncate">{m.battery_desc}</div>
+                <div className="text-[11px] text-slate-500 font-semibold mt-0.5">
+                  {m.customer_mobile} · Purchase {formatDate(m.purchaseDate)} · Warranty {m.warrantyMonths} months · Expires {formatDate(m.expiryDate)}
+                </div>
+                {m.serial_number && (
+                  <div className="text-[11px] text-slate-500 font-semibold mt-0.5">Serial: <span className="font-mono">{m.serial_number}</span></div>
+                )}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {result && result.found && !result.multiple && (
         <div className={`border-2 rounded-xl overflow-hidden shadow-sm ${isValid ? 'border-emerald-500' : 'border-red-500'}`}>
           <div className={`p-4 ${isValid ? 'bg-emerald-600' : 'bg-red-600'} text-white`}>
             <div className="flex items-start space-x-3">
