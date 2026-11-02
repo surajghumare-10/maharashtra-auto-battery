@@ -92,24 +92,80 @@ async function sheetsRequest(config, path, options = {}) {
   return data;
 }
 
-async function appendRow(sheetName, values) {
+async function appendRows(sheetName, rows) {
   const config = getConfig();
   if (!config) return { skipped: true };
 
   try {
-    await sheetsRequest(
+    const data = await sheetsRequest(
       config,
       `/values/${encodeURIComponent(`${sheetName}!A:ZZ`)}:append?valueInputOption=USER_ENTERED&insertDataOption=INSERT_ROWS`,
       {
         method: 'POST',
-        body: JSON.stringify({ values: [values] })
+        body: JSON.stringify({ values: rows })
       }
     );
-    return { ok: true };
+    return { ok: true, range: data.updates && data.updates.updatedRange };
   } catch (err) {
     console.error('Google Sheets sync error:', err.message);
     return { ok: false, error: err.message };
   }
+}
+
+async function appendRow(sheetName, values) {
+  return appendRows(sheetName, [values]);
+}
+
+const sheetIdCache = new Map();
+
+async function getSheetId(config, sheetName) {
+  const key = `${config.sheetId}:${sheetName}`;
+  if (sheetIdCache.has(key)) return sheetIdCache.get(key);
+  const data = await sheetsRequest(config, '?fields=sheets.properties(sheetId,title)');
+  for (const sheet of data.sheets || []) {
+    sheetIdCache.set(`${config.sheetId}:${sheet.properties.title}`, sheet.properties.sheetId);
+  }
+  return sheetIdCache.get(key);
+}
+
+const BILL_MERGED_COLUMNS = [1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 20, 21, 22];
+
+async function mergeBillRows(config, sheetName, startRow, endRow) {
+  if (!startRow || !endRow || endRow <= startRow) return;
+  const sheetId = await getSheetId(config, sheetName);
+  if (sheetId === undefined || sheetId === null) return;
+
+  const requests = BILL_MERGED_COLUMNS.map((column) => ({
+    mergeCells: {
+      mergeType: 'MERGE_COLUMNS',
+      range: {
+        sheetId,
+        startRowIndex: startRow - 1,
+        endRowIndex: endRow,
+        startColumnIndex: column - 1,
+        endColumnIndex: column
+      }
+    }
+  }));
+
+  requests.push({
+    repeatCell: {
+      range: {
+        sheetId,
+        startRowIndex: startRow - 1,
+        endRowIndex: endRow,
+        startColumnIndex: 0,
+        endColumnIndex: 22
+      },
+      cell: { userEnteredFormat: { verticalAlignment: 'MIDDLE' } },
+      fields: 'userEnteredFormat.verticalAlignment'
+    }
+  });
+
+  await sheetsRequest(config, ':batchUpdate', {
+    method: 'POST',
+    body: JSON.stringify({ requests })
+  });
 }
 
 async function ensureHeaders(sheetName, headers) {
@@ -147,17 +203,17 @@ const BILL_HEADERS = [
   'Customer Mobile',
   'Vehicle Number',
   'Village',
-  'Items (Summary)',
-  'Quantity (Total)',
-  'Subtotal',
-  'Exchange Discount',
+  'Item',
+  'Qty',
+  'Item Subtotal',
+  'Item Exchange Discount',
   'Manual/Special Discount',
   'Grand Total',
   'Amount Paid',
   'Balance Due',
   'Payment Mode',
   'Status',
-  'Serial Numbers',
+  'Serial Number',
   'Warranty (Months)',
   'Staff',
   'Notes',
@@ -186,45 +242,68 @@ async function syncBill(bill, items = []) {
 
     const created = bill.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
     const [date, time] = created.split(' ');
-    const itemSummary = (items && items.length > 0)
-      ? items.map(i => `${i.brand || i.battery_brand} ${i.model_name || i.battery_model} x${i.quantity}`).join(' | ')
-      : (bill.battery_brand ? `${bill.battery_brand} ${bill.battery_model} x${bill.quantity || 1}` : '');
-    const qtyTotal = (items && items.length > 0)
-      ? items.reduce((s, i) => s + (parseInt(i.quantity, 10) || 0), 0)
-      : (parseInt(bill.quantity, 10) || 0);
-    const serials = (items && items.length > 0)
-      ? items.map(i => i.serial_number).filter(Boolean).join(', ')
-      : (bill.serial_number || '');
-    const warranties = (items && items.length > 0)
-      ? items.map(i => i.warranty_months).filter(Boolean).join(', ')
-      : (bill.warranty_months || '');
+    const syncedAt = new Date().toISOString();
+    const rowItems = (items && items.length > 0) ? items : [null];
 
-    const values = [
-      date || '',
-      time || '',
-      bill.bill_no || bill.id || '',
-      bill.customer_name || '',
-      bill.customer_mobile || '',
-      bill.vehicle_number || '',
-      bill.village_name || '',
-      itemSummary,
-      qtyTotal,
-      bill.subtotal || 0,
-      bill.exchange_discount || 0,
-      bill.manual_discount || 0,
-      bill.grand_total || 0,
-      bill.amount_paid || 0,
-      bill.balance_due || 0,
-      bill.payment_mode || '',
-      bill.status || 'completed',
-      serials,
-      warranties,
-      bill.created_by_name || '',
-      bill.notes || '',
-      new Date().toISOString()
-    ];
+    const rows = rowItems.map((item, index) => {
+      const isFirst = index === 0;
+      let itemSummary;
+      let qty;
+      let subtotal;
+      let exchange;
+      let serial;
+      let warranty;
 
-    await appendRow(config.billsSheet, values);
+      if (item) {
+        const capacity = item.capacity_ah ? ` (${item.capacity_ah}Ah)` : '';
+        itemSummary = `${item.brand || item.battery_brand || ''} ${item.model_name || item.battery_model || ''}${capacity}`.trim();
+        qty = parseInt(item.quantity, 10) || 0;
+        subtotal = item.subtotal || 0;
+        exchange = item.exchange_discount || 0;
+        serial = item.serial_number || '';
+        warranty = item.warranty_months || '';
+      } else {
+        itemSummary = bill.battery_brand ? `${bill.battery_brand} ${bill.battery_model || ''}`.trim() : '';
+        qty = parseInt(bill.quantity, 10) || 0;
+        subtotal = bill.subtotal || 0;
+        exchange = bill.exchange_discount || 0;
+        serial = bill.serial_number || '';
+        warranty = bill.warranty_months || '';
+      }
+
+      return [
+        date || '',
+        time || '',
+        bill.bill_no || bill.id || '',
+        bill.customer_name || '',
+        bill.customer_mobile || '',
+        bill.vehicle_number || '',
+        bill.village_name || '',
+        itemSummary,
+        qty,
+        subtotal,
+        exchange,
+        isFirst ? (bill.manual_discount || 0) : '',
+        isFirst ? (bill.grand_total || 0) : '',
+        isFirst ? (bill.amount_paid || 0) : '',
+        isFirst ? (bill.balance_due || 0) : '',
+        isFirst ? (bill.payment_mode || '') : '',
+        isFirst ? (bill.status || 'completed') : '',
+        serial,
+        warranty,
+        isFirst ? (bill.created_by_name || '') : '',
+        isFirst ? (bill.notes || '') : '',
+        isFirst ? syncedAt : ''
+      ];
+    });
+
+    const appended = await appendRows(config.billsSheet, rows);
+    if (rows.length > 1 && appended.ok && appended.range) {
+      const match = /!.*?(\d+):[A-Z]+(\d+)$/.exec(appended.range);
+      if (match) {
+        await mergeBillRows(config, config.billsSheet, Number(match[1]), Number(match[2]));
+      }
+    }
   } catch (err) {
     console.error('syncBill error:', err.message);
   }
