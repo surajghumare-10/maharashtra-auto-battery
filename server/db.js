@@ -226,6 +226,8 @@ async function initSchema() {
         status TEXT DEFAULT 'completed' CHECK(status IN ('completed', 'cancelled')),
         created_by INTEGER NOT NULL REFERENCES users(id),
         created_by_name TEXT NOT NULL,
+        billed_by INTEGER REFERENCES users(id),
+        billed_by_name TEXT,
         whatsapp_status TEXT DEFAULT 'pending',
         whatsapp_error TEXT,
         created_at TEXT DEFAULT ${nowSql},
@@ -342,6 +344,74 @@ async function initSchema() {
         created_at TEXT DEFAULT ${nowSql}
       );
 
+      CREATE TABLE IF NOT EXISTS warranty_replacements (
+        id SERIAL PRIMARY KEY,
+        old_serial_number TEXT NOT NULL,
+        new_serial_number TEXT NOT NULL,
+        old_bill_id INTEGER REFERENCES bills(id),
+        old_bill_item_id INTEGER REFERENCES bill_items(id),
+        old_bill_no TEXT,
+        customer_id INTEGER REFERENCES customers(id),
+        customer_name TEXT,
+        customer_mobile TEXT,
+        battery_id INTEGER REFERENCES batteries(id),
+        battery_brand TEXT,
+        battery_model TEXT,
+        battery_type TEXT,
+        supplier_id INTEGER REFERENCES suppliers(id),
+        supplier_name TEXT,
+        warranty_months INTEGER DEFAULT 0,
+        warranty_expires_at TEXT,
+        replacement_date TEXT DEFAULT ${nowSql},
+        status TEXT NOT NULL DEFAULT 'pending_dealer' CHECK(status IN ('pending_dealer', 'replacement_received', 'cancelled')),
+        dealer_received_at TEXT,
+        dealer_received_by INTEGER REFERENCES users(id),
+        dealer_received_by_name TEXT,
+        notes TEXT,
+        created_by INTEGER NOT NULL REFERENCES users(id),
+        created_by_name TEXT NOT NULL,
+        created_at TEXT DEFAULT ${nowSql},
+        updated_at TEXT DEFAULT ${nowSql}
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_warranty_replacements_status ON warranty_replacements(status);
+      CREATE INDEX IF NOT EXISTS idx_warranty_replacements_battery ON warranty_replacements(battery_id);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_warranty_old_serial_active
+        ON warranty_replacements (LOWER(old_serial_number))
+        WHERE status <> 'cancelled';
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_warranty_new_serial_active
+        ON warranty_replacements (LOWER(new_serial_number))
+        WHERE status <> 'cancelled';
+
+      CREATE TABLE IF NOT EXISTS battery_loans (
+        id SERIAL PRIMARY KEY,
+        direction TEXT NOT NULL CHECK(direction IN ('lent', 'borrowed')),
+        party_name TEXT NOT NULL,
+        party_mobile TEXT,
+        party_type TEXT NOT NULL DEFAULT 'Customer' CHECK(party_type IN ('Customer', 'Dealer', 'Staff', 'Other')),
+        battery_id INTEGER NOT NULL REFERENCES batteries(id),
+        battery_brand TEXT NOT NULL,
+        battery_model TEXT NOT NULL,
+        battery_type TEXT,
+        quantity INTEGER NOT NULL DEFAULT 1 CHECK(quantity > 0),
+        serial_number TEXT,
+        loan_date TEXT NOT NULL DEFAULT to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD'),
+        expected_return_date TEXT,
+        status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open', 'returned', 'cancelled')),
+        returned_at TEXT,
+        returned_by INTEGER REFERENCES users(id),
+        returned_by_name TEXT,
+        notes TEXT,
+        created_by INTEGER NOT NULL REFERENCES users(id),
+        created_by_name TEXT NOT NULL,
+        created_at TEXT DEFAULT ${nowSql},
+        updated_at TEXT DEFAULT ${nowSql}
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_battery_loans_status ON battery_loans(status);
+      CREATE INDEX IF NOT EXISTS idx_battery_loans_direction ON battery_loans(direction);
+      CREATE INDEX IF NOT EXISTS idx_battery_loans_battery ON battery_loans(battery_id);
+
       CREATE INDEX IF NOT EXISTS idx_bill_items_bill ON bill_items(bill_id);
       CREATE INDEX IF NOT EXISTS idx_bill_items_battery ON bill_items(battery_id);
       CREATE INDEX IF NOT EXISTS idx_bills_customer ON bills(customer_id);
@@ -350,8 +420,23 @@ async function initSchema() {
       CREATE INDEX IF NOT EXISTS idx_supplier_payments_supplier ON supplier_payments(supplier_id);
     `);
 
+    await client.query('ALTER TABLE bills ADD COLUMN IF NOT EXISTS billed_by INTEGER REFERENCES users(id)');
+    await client.query('ALTER TABLE bills ADD COLUMN IF NOT EXISTS billed_by_name TEXT');
+    await client.query('CREATE INDEX IF NOT EXISTS idx_bills_billed_by ON bills(billed_by)');
+    await client.query('ALTER TABLE stock_movements DROP CONSTRAINT IF EXISTS stock_movements_type_check');
+    await client.query(`
+      ALTER TABLE stock_movements
+      ADD CONSTRAINT stock_movements_type_check
+      CHECK (type IN (
+        'in', 'sale', 'adjustment', 'return', 'cancel_reversal', 'warranty_out', 'warranty_in',
+        'loan_out', 'loan_return_in', 'loan_in', 'loan_return_out'
+      ))
+    `);
+
     await seedInitialData();
     await backfillBillItems();
+    await client.query('UPDATE bills SET billed_by = created_by, billed_by_name = created_by_name WHERE billed_by IS NULL');
+    await client.query('UPDATE bills SET billed_by_name = created_by_name WHERE billed_by_name IS NULL');
     await refreshSettingsCache();
   } finally {
     try {

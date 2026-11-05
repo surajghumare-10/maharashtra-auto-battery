@@ -74,6 +74,16 @@ router.put('/change-password', authenticateToken, async (req, res) => {
   res.json({ message: 'Password updated successfully. Please use the new password next time.' });
 });
 
+// GET /staff (All authenticated staff, for billing attribution)
+router.get('/staff', authenticateToken, async (req, res) => {
+  const users = await db.all(`
+    SELECT id, name, role
+    FROM users
+    ORDER BY CASE role WHEN 'owner' THEN 0 WHEN 'manager' THEN 1 ELSE 2 END, name ASC
+  `);
+  res.json({ users });
+});
+
 // GET /users (Owner only)
 router.get('/users', authenticateToken, requireRole(['owner']), async (req, res) => {
   const users = await db.all(`

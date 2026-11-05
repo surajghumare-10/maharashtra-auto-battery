@@ -16,7 +16,9 @@ const TABLES = [
   'old_battery_stock',
   'scrap_sales',
   'suppliers',
-  'supplier_payments'
+  'supplier_payments',
+  'warranty_replacements',
+  'battery_loans'
 ];
 
 function ensureBackupsDir() {

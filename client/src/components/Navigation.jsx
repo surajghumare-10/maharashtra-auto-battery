@@ -1,6 +1,6 @@
 import React from 'react';
 import { useAuth } from '../context/AuthContext';
-import { FilePlus2, ReceiptText, Tag, AlertCircle, Boxes, LayoutDashboard, Settings, Store } from 'lucide-react';
+import { FilePlus2, ReceiptText, Tag, AlertCircle, Boxes, LayoutDashboard, Settings, Store, ArrowLeftRight } from 'lucide-react';
 
 export default function Navigation({ activeTab, setActiveTab }) {
   const { isOwner, isManager, canViewDues, canViewInventory, t } = useAuth();
@@ -23,8 +23,9 @@ export default function Navigation({ activeTab, setActiveTab }) {
     navItems.push({ id: 'dealers', label: 'Dealer Khata', icon: Store });
   }
 
-  // Warranty check is available to all staff
+  // Warranty check and battery loans are available to all staff
   navItems.push({ id: 'warranty', label: 'Warranty', icon: AlertCircle });
+  navItems.push({ id: 'loans', label: 'Loans', icon: ArrowLeftRight });
 
   if (isOwner || isManager) {
     navItems.push({ id: 'dashboard', label: t.dashboard, icon: LayoutDashboard });

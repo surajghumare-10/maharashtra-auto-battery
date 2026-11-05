@@ -72,7 +72,7 @@ router.get('/dashboard', authenticateToken, requireRole(['owner', 'manager']), a
   `)).count;
 
   const recentBills = await db.all(`
-    SELECT id, bill_no, customer_name, customer_mobile, vehicle_number, village_name, battery_brand, battery_model, grand_total, payment_mode, created_at, created_by_name
+    SELECT id, bill_no, customer_name, customer_mobile, vehicle_number, village_name, battery_brand, battery_model, grand_total, payment_mode, created_at, created_by_name, billed_by_name
     FROM bills
     WHERE status != 'cancelled'
     ORDER BY id DESC LIMIT 5

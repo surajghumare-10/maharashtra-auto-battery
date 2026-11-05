@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { getSetting } = require('../db');
+const { db, getSetting } = require('../db');
 
 const TOKEN_URL = 'https://oauth2.googleapis.com/token';
 const SHEETS_URL = 'https://sheets.googleapis.com/v4/spreadsheets';
@@ -128,32 +128,40 @@ async function getSheetId(config, sheetName) {
   return sheetIdCache.get(key);
 }
 
-const BILL_MERGED_COLUMNS = [1, 2, 3, 4, 5, 6, 7, 12, 13, 14, 15, 16, 17, 20, 21, 22];
+const BILL_MERGED_COLUMNS = [1, 2, 3, 4, 5, 6, 7, 14, 15, 16, 17, 18, 19, 20, 21, 22];
 
-async function mergeBillRows(config, sheetName, startRow, endRow) {
-  if (!startRow || !endRow || endRow <= startRow) return;
+async function mergeBillRanges(config, sheetName, ranges) {
+  const validRanges = ranges.filter((range) => range.endRow > range.startRow);
+  if (validRanges.length === 0) return;
   const sheetId = await getSheetId(config, sheetName);
   if (sheetId === undefined || sheetId === null) return;
 
-  const requests = BILL_MERGED_COLUMNS.map((column) => ({
-    mergeCells: {
-      mergeType: 'MERGE_COLUMNS',
-      range: {
-        sheetId,
-        startRowIndex: startRow - 1,
-        endRowIndex: endRow,
-        startColumnIndex: column - 1,
-        endColumnIndex: column
-      }
+  const requests = [];
+  for (const { startRow, endRow } of validRanges) {
+    for (const column of BILL_MERGED_COLUMNS) {
+      requests.push({
+        mergeCells: {
+          mergeType: 'MERGE_COLUMNS',
+          range: {
+            sheetId,
+            startRowIndex: startRow - 1,
+            endRowIndex: endRow,
+            startColumnIndex: column - 1,
+            endColumnIndex: column
+          }
+        }
+      });
     }
-  }));
+  }
 
+  const firstRow = Math.min(...validRanges.map((range) => range.startRow));
+  const lastRow = Math.max(...validRanges.map((range) => range.endRow));
   requests.push({
     repeatCell: {
       range: {
         sheetId,
-        startRowIndex: startRow - 1,
-        endRowIndex: endRow,
+        startRowIndex: firstRow - 1,
+        endRowIndex: lastRow,
         startColumnIndex: 0,
         endColumnIndex: 22
       },
@@ -166,6 +174,10 @@ async function mergeBillRows(config, sheetName, startRow, endRow) {
     method: 'POST',
     body: JSON.stringify({ requests })
   });
+}
+
+async function mergeBillRows(config, sheetName, startRow, endRow) {
+  return mergeBillRanges(config, sheetName, [{ startRow, endRow }]);
 }
 
 async function ensureHeaders(sheetName, headers) {
@@ -207,14 +219,14 @@ const BILL_HEADERS = [
   'Qty',
   'Item Subtotal',
   'Item Exchange Discount',
+  'Serial Number',
+  'Warranty (Months)',
   'Manual/Special Discount',
   'Grand Total',
   'Amount Paid',
   'Balance Due',
   'Payment Mode',
   'Status',
-  'Serial Number',
-  'Warranty (Months)',
   'Staff',
   'Notes',
   'Synced At'
@@ -234,68 +246,72 @@ const PAYMENT_HEADERS = [
   'Synced At'
 ];
 
+function buildBillRows(bill, items = [], syncedAt = new Date().toISOString()) {
+  const created = bill.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const [date, time] = created.split(' ');
+  const rowItems = (items && items.length > 0) ? items : [null];
+
+  return rowItems.map((item, index) => {
+    const isFirst = index === 0;
+    let itemSummary;
+    let qty;
+    let subtotal;
+    let exchange;
+    let serial;
+    let warranty;
+
+    if (item) {
+      const capacity = item.capacity_ah ? ` (${item.capacity_ah}Ah)` : '';
+      itemSummary = `${item.brand || item.battery_brand || ''} ${item.model_name || item.battery_model || ''}${capacity}`.trim();
+      qty = parseInt(item.quantity, 10) || 0;
+      subtotal = item.subtotal || 0;
+      exchange = item.exchange_discount || 0;
+      serial = item.serial_number || '';
+      warranty = item.warranty_months || '';
+    } else {
+      itemSummary = bill.battery_brand ? `${bill.battery_brand} ${bill.battery_model || ''}`.trim() : '';
+      qty = parseInt(bill.quantity, 10) || 0;
+      subtotal = bill.subtotal || 0;
+      exchange = bill.exchange_discount || 0;
+      serial = bill.serial_number || '';
+      warranty = bill.warranty_months || '';
+    }
+
+    return [
+      date || '',
+      time || '',
+      bill.bill_no || bill.id || '',
+      bill.customer_name || '',
+      bill.customer_mobile || '',
+      bill.vehicle_number || '',
+      bill.village_name || '',
+      itemSummary,
+      qty,
+      subtotal,
+      exchange,
+      serial,
+      warranty,
+      isFirst ? (bill.manual_discount || 0) : '',
+      isFirst ? (bill.grand_total || 0) : '',
+      isFirst ? (bill.amount_paid || 0) : '',
+      isFirst ? (bill.balance_due || 0) : '',
+      isFirst ? (bill.payment_mode || '') : '',
+      isFirst ? (bill.status || 'completed') : '',
+      isFirst ? (bill.billed_by_name || bill.created_by_name || '') : '',
+      isFirst ? (bill.notes || '') : '',
+      isFirst ? syncedAt : ''
+    ];
+  });
+}
+
 async function syncBill(bill, items = []) {
   try {
     const config = getConfig();
     if (!config) return;
     await ensureHeaders(config.billsSheet, BILL_HEADERS);
 
-    const created = bill.created_at || new Date().toISOString().replace('T', ' ').slice(0, 19);
-    const [date, time] = created.split(' ');
     const syncedAt = new Date().toISOString();
-    const rowItems = (items && items.length > 0) ? items : [null];
-
-    const rows = rowItems.map((item, index) => {
-      const isFirst = index === 0;
-      let itemSummary;
-      let qty;
-      let subtotal;
-      let exchange;
-      let serial;
-      let warranty;
-
-      if (item) {
-        const capacity = item.capacity_ah ? ` (${item.capacity_ah}Ah)` : '';
-        itemSummary = `${item.brand || item.battery_brand || ''} ${item.model_name || item.battery_model || ''}${capacity}`.trim();
-        qty = parseInt(item.quantity, 10) || 0;
-        subtotal = item.subtotal || 0;
-        exchange = item.exchange_discount || 0;
-        serial = item.serial_number || '';
-        warranty = item.warranty_months || '';
-      } else {
-        itemSummary = bill.battery_brand ? `${bill.battery_brand} ${bill.battery_model || ''}`.trim() : '';
-        qty = parseInt(bill.quantity, 10) || 0;
-        subtotal = bill.subtotal || 0;
-        exchange = bill.exchange_discount || 0;
-        serial = bill.serial_number || '';
-        warranty = bill.warranty_months || '';
-      }
-
-      return [
-        date || '',
-        time || '',
-        bill.bill_no || bill.id || '',
-        bill.customer_name || '',
-        bill.customer_mobile || '',
-        bill.vehicle_number || '',
-        bill.village_name || '',
-        itemSummary,
-        qty,
-        subtotal,
-        exchange,
-        isFirst ? (bill.manual_discount || 0) : '',
-        isFirst ? (bill.grand_total || 0) : '',
-        isFirst ? (bill.amount_paid || 0) : '',
-        isFirst ? (bill.balance_due || 0) : '',
-        isFirst ? (bill.payment_mode || '') : '',
-        isFirst ? (bill.status || 'completed') : '',
-        serial,
-        warranty,
-        isFirst ? (bill.created_by_name || '') : '',
-        isFirst ? (bill.notes || '') : '',
-        isFirst ? syncedAt : ''
-      ];
-    });
+    const rows = buildBillRows(bill, items, syncedAt);
 
     const appended = await appendRows(config.billsSheet, rows);
     if (rows.length > 1 && appended.ok && appended.range) {
@@ -307,6 +323,84 @@ async function syncBill(bill, items = []) {
   } catch (err) {
     console.error('syncBill error:', err.message);
   }
+}
+
+async function rebuildBillsSheet() {
+  const config = getConfig();
+  if (!config) return { skipped: true };
+
+  const data = await sheetsRequest(
+    config,
+    '?fields=sheets.properties(sheetId,title,gridProperties(rowCount)),sheets.merges'
+  );
+  const sheet = (data.sheets || []).find((entry) => entry.properties.title === config.billsSheet);
+  if (!sheet) throw new Error(`Sheet not found: ${config.billsSheet}`);
+
+  const bills = await db.all('SELECT * FROM bills ORDER BY id');
+  const items = await db.all('SELECT * FROM bill_items ORDER BY bill_id, id');
+  const itemsByBill = new Map();
+  for (const item of items) {
+    if (!itemsByBill.has(item.bill_id)) itemsByBill.set(item.bill_id, []);
+    itemsByBill.get(item.bill_id).push(item);
+  }
+
+  const syncedAt = new Date().toISOString();
+  const rows = [];
+  const mergeRanges = [];
+  let rowNumber = 2;
+
+  for (const bill of bills) {
+    const billRows = buildBillRows(bill, itemsByBill.get(bill.id) || [], syncedAt);
+    rows.push(...billRows);
+    if (billRows.length > 1) {
+      mergeRanges.push({ startRow: rowNumber, endRow: rowNumber + billRows.length - 1 });
+    }
+    rowNumber += billRows.length;
+  }
+
+  const sheetId = sheet.properties.sheetId;
+  const totalRows = rows.length + 1;
+  const currentRowCount = sheet.properties.gridProperties?.rowCount || 0;
+  const requests = [];
+
+  if (sheet.merges && sheet.merges.length > 0) {
+    for (const merge of sheet.merges) {
+      requests.push({ unmergeCells: { range: { sheetId, ...merge } } });
+    }
+  }
+  if (totalRows > currentRowCount) {
+    requests.push({
+      appendDimension: {
+        sheetId,
+        dimension: 'ROWS',
+        length: totalRows - currentRowCount
+      }
+    });
+  }
+  if (requests.length > 0) {
+    await sheetsRequest(config, ':batchUpdate', {
+      method: 'POST',
+      body: JSON.stringify({ requests })
+    });
+  }
+
+  await sheetsRequest(config, `/values/${encodeURIComponent(`${config.billsSheet}!A:ZZ`)}:clear`, {
+    method: 'POST',
+    body: JSON.stringify({})
+  });
+
+  await sheetsRequest(
+    config,
+    `/values/${encodeURIComponent(`${config.billsSheet}!A1:V${totalRows}`)}?valueInputOption=USER_ENTERED`,
+    {
+      method: 'PUT',
+      body: JSON.stringify({ values: [BILL_HEADERS, ...rows] })
+    }
+  );
+
+  await mergeBillRanges(config, config.billsSheet, mergeRanges);
+
+  return { ok: true, bills: bills.length, rows: rows.length };
 }
 
 async function syncPayment(payment, customer = {}) {
@@ -340,6 +434,7 @@ async function syncPayment(payment, customer = {}) {
 module.exports = {
   syncBill,
   syncPayment,
+  rebuildBillsSheet,
   getConfig,
   ensureHeaders
 };

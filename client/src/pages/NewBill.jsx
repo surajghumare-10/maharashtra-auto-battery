@@ -2,6 +2,7 @@ import React, { useState, useEffect, useMemo } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { formatCurrency, cleanMobile } from '../utils/formatters';
+import { copyText } from '../utils/clipboard';
 import UPIPaymentQR from '../components/UPIPaymentQR';
 import {
   Send,
@@ -18,7 +19,8 @@ import {
   Trash2,
   QrCode,
   ScanLine,
-  ShoppingCart
+  ShoppingCart,
+  Copy
 } from 'lucide-react';
 
 const BarcodeScanner = React.lazy(() => import('../components/BarcodeScanner'));
@@ -35,13 +37,15 @@ const emptyDraft = {
 };
 
 export default function NewBill({ onOpenBillDetail }) {
-  const { t } = useAuth();
+  const { t, user } = useAuth();
 
   const [batteries, setBatteries] = useState([]);
   const [settings, setSettings] = useState({});
   const [selectedType, setSelectedType] = useState('All');
   const [modelSearch, setModelSearch] = useState('');
   const [loadingCatalog, setLoadingCatalog] = useState(true);
+  const [staffList, setStaffList] = useState([]);
+  const [billedBy, setBilledBy] = useState('');
 
   const [customerMobile, setCustomerMobile] = useState('');
   const [customerName, setCustomerName] = useState('');
@@ -66,6 +70,7 @@ export default function NewBill({ onOpenBillDetail }) {
   const [saveSuccessModal, setSaveSuccessModal] = useState(null);
   const [showUpiQr, setShowUpiQr] = useState(false);
   const [scannerTarget, setScannerTarget] = useState(null);
+  const [copiedTarget, setCopiedTarget] = useState('');
 
   useEffect(() => {
     loadBatteries();
@@ -73,6 +78,24 @@ export default function NewBill({ onOpenBillDetail }) {
       .then(res => setSettings(res.settings || {}))
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    api.getStaff()
+      .then(res => {
+        const list = res.users || [];
+        setStaffList(list);
+        const saved = localStorage.getItem('mab_billed_by');
+        const savedExists = saved && list.some(u => String(u.id) === saved);
+        const currentExists = user?.id && list.some(u => String(u.id) === String(user.id));
+        setBilledBy(savedExists ? saved : (currentExists ? String(user.id) : ''));
+      })
+      .catch((err) => console.error('Failed to load staff list:', err));
+  }, [user?.id]);
+
+  const handleBilledByChange = (value) => {
+    setBilledBy(value);
+    if (value) localStorage.setItem('mab_billed_by', value);
+  };
 
   const loadBatteries = async () => {
     try {
@@ -233,6 +256,10 @@ export default function NewBill({ onOpenBillDetail }) {
       setErrorMessage('Please add at least one battery to the bill');
       return;
     }
+    if (!billedBy) {
+      setErrorMessage('Please select the staff member who is making this bill');
+      return;
+    }
 
     setErrorMessage('');
     setIsSubmitting(true);
@@ -258,6 +285,7 @@ export default function NewBill({ onOpenBillDetail }) {
       payment_mode: paymentMode,
       amount_paid: paidNow,
       notes: notes.trim(),
+      billed_by: Number(billedBy),
       allow_zero_stock_override: allowOverride,
       send_message: sendMessage
     };
@@ -297,6 +325,13 @@ export default function NewBill({ onOpenBillDetail }) {
     setShowUpiQr(false);
   };
 
+  const handleCopyMessage = async (target, text) => {
+    const copied = await copyText(text);
+    if (!copied) return;
+    setCopiedTarget(target);
+    setTimeout(() => setCopiedTarget(''), 2000);
+  };
+
   const upiId = settings.upi_id;
   const payeeName = settings.upi_payee_name || settings.shop_name || 'Maharashtra Auto Battery';
   const qrCollectAmount = balanceDue > 0 ? balanceDue : paidNow;
@@ -327,6 +362,29 @@ export default function NewBill({ onOpenBillDetail }) {
           <button type="button" onClick={() => setErrorMessage('')} className="text-xs underline ml-2">Dismiss</button>
         </div>
       )}
+
+      <div className="bg-white border-2 border-slate-300 rounded-lg p-3 mb-4 shadow-sm flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+        <div>
+          <label className="block text-xs font-black text-slate-700 uppercase tracking-wider">
+            Bill created by <span className="text-red-600">*</span>
+          </label>
+          <p className="text-[11px] text-slate-500 font-semibold mt-0.5">
+            Owner sees this name in Bills, Dashboard, print copy and Google Sheets.
+          </p>
+        </div>
+        <select
+          value={billedBy}
+          onChange={(e) => handleBilledByChange(e.target.value)}
+          className="h-11 w-full sm:w-64 px-3 border-2 border-accent-700 rounded-lg text-sm font-black text-slate-900 bg-white focus:outline-none"
+        >
+          <option value="">Select staff member</option>
+          {staffList.map((staff) => (
+            <option key={staff.id} value={staff.id}>
+              {staff.name} ({staff.role})
+            </option>
+          ))}
+        </select>
+      </div>
 
       <div className="space-y-4">
         {/* 1. CUSTOMER */}
@@ -860,36 +918,80 @@ export default function NewBill({ onOpenBillDetail }) {
               </div>
             )}
 
-            <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs mb-5">
-              <div className="flex items-center justify-between font-bold text-slate-800 mb-1">
-                <span>WhatsApp Delivery:</span>
-                {saveSuccessModal.messaging?.customerStatus === 'sent' ? (
-                  <span className="text-emerald-700 font-black">✓ Sent Automatically</span>
-                ) : (
-                  <span className="text-blue-800 font-black">Pre-filled Link Ready</span>
+            <div className="space-y-2 mb-5">
+              <div className="p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs">
+                <div className="flex items-center justify-between font-bold text-slate-800 mb-1">
+                  <span>Customer WhatsApp</span>
+                  <span className={saveSuccessModal.messaging?.customerStatus === 'sent' ? 'text-emerald-700 font-black' : 'text-blue-800 font-black'}>
+                    {saveSuccessModal.messaging?.customerStatus === 'sent' ? 'Sent Automatically' : 'Open Link / Copy'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  {saveSuccessModal.messaging?.waMeUrl ? (
+                    <a
+                      href={saveSuccessModal.messaging.waMeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="h-10 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-lg text-[11px] flex items-center justify-center space-x-1.5 shadow-sm"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Open WhatsApp</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  ) : <span />}
+                  <button
+                    type="button"
+                    onClick={() => handleCopyMessage('customer', saveSuccessModal.messaging?.customerMessage)}
+                    className="h-10 bg-white hover:bg-blue-100 text-blue-900 font-black rounded-lg text-[11px] border border-blue-300 flex items-center justify-center space-x-1.5"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>{copiedTarget === 'customer' ? 'Copied!' : 'Copy Template'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <div className="p-3 bg-amber-50 border border-amber-200 rounded-lg text-xs">
+                <div className="flex items-center justify-between font-bold text-slate-800 mb-1">
+                  <span>Owner Notification</span>
+                  <span className={saveSuccessModal.messaging?.ownerStatus === 'sent' ? 'text-emerald-700 font-black' : 'text-amber-800 font-black'}>
+                    {saveSuccessModal.messaging?.ownerStatus === 'sent'
+                      ? 'Sent Automatically'
+                      : saveSuccessModal.messaging?.ownerStatus === 'not_configured'
+                        ? 'Owner Mobile Not Set'
+                        : 'Open Link / Copy'}
+                  </span>
+                </div>
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  {saveSuccessModal.messaging?.ownerWaMeUrl ? (
+                    <a
+                      href={saveSuccessModal.messaging.ownerWaMeUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="h-10 bg-amber-700 hover:bg-amber-800 text-white font-black rounded-lg text-[11px] flex items-center justify-center space-x-1.5 shadow-sm"
+                    >
+                      <MessageCircle className="w-4 h-4" />
+                      <span>Notify Owner</span>
+                      <ExternalLink className="w-3 h-3" />
+                    </a>
+                  ) : <span />}
+                  <button
+                    type="button"
+                    onClick={() => handleCopyMessage('owner', saveSuccessModal.messaging?.ownerMessage)}
+                    className="h-10 bg-white hover:bg-amber-100 text-amber-900 font-black rounded-lg text-[11px] border border-amber-300 flex items-center justify-center space-x-1.5"
+                  >
+                    <Copy className="w-4 h-4" />
+                    <span>{copiedTarget === 'owner' ? 'Copied!' : 'Copy Template'}</span>
+                  </button>
+                </div>
+                {!saveSuccessModal.messaging?.ownerWaMeUrl && (
+                  <p className="text-[11px] text-amber-900 font-semibold mt-1">
+                    Add Owner Mobile in Settings to create the owner notification link.
+                  </p>
                 )}
               </div>
-              <p className="text-slate-600">
-                {saveSuccessModal.messaging?.customerStatus === 'sent'
-                  ? 'Message has been dispatched to customer WhatsApp / SMS.'
-                  : 'Tap the green button below to open WhatsApp with the invoice summary.'}
-              </p>
             </div>
 
             <div className="space-y-2">
-              {saveSuccessModal.messaging?.waMeUrl && (
-                <a
-                  href={saveSuccessModal.messaging.waMeUrl}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="w-full h-12 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded-lg text-sm flex items-center justify-center space-x-2 shadow-sm"
-                >
-                  <MessageCircle className="w-5 h-5" />
-                  <span>Open in WhatsApp (wa.me)</span>
-                  <ExternalLink className="w-4 h-4 ml-1" />
-                </a>
-              )}
-
               <div className="grid grid-cols-2 gap-2 pt-1">
                 <button
                   type="button"

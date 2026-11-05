@@ -72,6 +72,63 @@ router.post('/', authenticateToken, requireRole(['owner', 'manager']), async (re
     return res.status(400).json({ error: `Invalid battery type. Allowed: ${validTypes.join(', ')}` });
   }
 
+  const cleanBrand = brand.trim();
+  const cleanModel = model_name.trim();
+  const cleanCapacity = Number(capacity_ah) || 0;
+  const existing = await db.get(`
+    SELECT * FROM batteries
+    WHERE LOWER(brand) = LOWER(?) AND LOWER(model_name) = LOWER(?) AND type = ? AND capacity_ah = ?
+    ORDER BY is_active DESC, id ASC LIMIT 1
+  `, cleanBrand, cleanModel, type, cleanCapacity);
+
+  if (existing && existing.is_active) {
+    return res.status(409).json({
+      error: `${existing.brand} ${existing.model_name} (${existing.type}, ${existing.capacity_ah}Ah) already exists in the price list. Edit that model instead of adding it again.`,
+      battery: existing
+    });
+  }
+
+  if (existing && !existing.is_active) {
+    const restored = await db.transaction(async (tx) => {
+      await tx.run(`
+        UPDATE batteries
+        SET brand = ?, model_name = ?, type = ?, capacity_ah = ?, warranty_months = ?,
+            selling_price = ?, cost_price = ?, exchange_discount = ?,
+            current_stock = current_stock + ?, low_stock_alert = ?, is_active = 1
+        WHERE id = ?
+      `,
+        cleanBrand,
+        cleanModel,
+        type,
+        cleanCapacity,
+        Number(warranty_months) || 12,
+        Number(selling_price) || 0,
+        Number(cost_price) || 0,
+        Number(exchange_discount) || 0,
+        Number(current_stock) || 0,
+        Number(low_stock_alert) || 2,
+        existing.id
+      );
+
+      if (Number(current_stock) > 0) {
+        await tx.run(`
+          INSERT INTO stock_movements (battery_id, type, quantity, cost_price, supplier_name, reason, user_id, user_name)
+          VALUES (?, 'in', ?, ?, 'Initial Setup', 'Model Restored', ?, ?)
+        `,
+          existing.id,
+          Number(current_stock),
+          Number(cost_price) || 0,
+          req.user.id,
+          req.user.name
+        );
+      }
+
+      return tx.get('SELECT * FROM batteries WHERE id = ?', existing.id);
+    });
+
+    return res.json({ battery: restored, message: 'Existing model restored and updated.' });
+  }
+
   const batteryId = await db.transaction(async (tx) => {
     const result = await tx.run(`
       INSERT INTO batteries (
@@ -79,10 +136,10 @@ router.post('/', authenticateToken, requireRole(['owner', 'manager']), async (re
         selling_price, cost_price, exchange_discount, current_stock, low_stock_alert
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `,
-      brand.trim(),
-      model_name.trim(),
+      cleanBrand,
+      cleanModel,
       type,
-      Number(capacity_ah) || 0,
+      cleanCapacity,
       Number(warranty_months) || 12,
       Number(selling_price) || 0,
       Number(cost_price) || 0,
@@ -130,6 +187,17 @@ router.put('/:id', authenticateToken, requireRole(['owner', 'manager']), async (
     exchange_discount = target.exchange_discount,
     low_stock_alert = target.low_stock_alert
   } = req.body;
+
+  const duplicate = await db.get(`
+    SELECT id FROM batteries
+    WHERE id <> ? AND is_active = 1
+      AND LOWER(brand) = LOWER(?) AND LOWER(model_name) = LOWER(?) AND type = ? AND capacity_ah = ?
+    LIMIT 1
+  `, id, brand.trim(), model_name.trim(), type, Number(capacity_ah));
+
+  if (duplicate) {
+    return res.status(409).json({ error: 'Another active model with this brand, model, type and capacity already exists.' });
+  }
 
   await db.run(`
     UPDATE batteries

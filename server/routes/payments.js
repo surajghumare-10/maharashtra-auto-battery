@@ -4,6 +4,7 @@ const { db, nowSql } = require('../db');
 const { authenticateToken, requireDuesAccess } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
 const { syncPayment } = require('../services/googleSheets');
+const { roundMoney, allocatePayment } = require('../services/billingMath');
 
 async function getNextReceiptNo() {
   const lastPayment = await db.get('SELECT id FROM payments ORDER BY id DESC LIMIT 1');
@@ -19,8 +20,8 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
     return res.status(400).json({ error: 'Customer ID, amount, and payment mode are required' });
   }
 
-  const payAmount = parseFloat(amount);
-  if (isNaN(payAmount) || payAmount <= 0) {
+  const payAmount = roundMoney(amount);
+  if (!Number.isFinite(payAmount) || payAmount <= 0) {
     return res.status(400).json({ error: 'Payment amount must be greater than zero' });
   }
 
@@ -35,11 +36,11 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
   }
 
   const pendingRow = await db.get(`
-    SELECT COALESCE(SUM(balance_due), 0) AS pending
+    SELECT COALESCE(SUM(GREATEST(balance_due, 0)), 0) AS pending
     FROM bills
     WHERE customer_id = ? AND status != 'cancelled'
   `, customer_id);
-  const pendingBefore = pendingRow ? pendingRow.pending : 0;
+  const pendingBefore = roundMoney(pendingRow ? pendingRow.pending : 0);
 
   if (payAmount > pendingBefore) {
     return res.status(400).json({
@@ -49,52 +50,65 @@ router.post('/', authenticateToken, requireDuesAccess, async (req, res) => {
 
   const receiptNo = await getNextReceiptNo();
 
-  const paymentId = await db.transaction(async (tx) => {
-    let unallocatedAmount = payAmount;
+  let paymentId;
+  try {
+    paymentId = await db.transaction(async (tx) => {
+      const unpaidBills = await tx.all(`
+        SELECT id, bill_no, grand_total, amount_paid, balance_due
+        FROM bills
+        WHERE customer_id = ? AND status != 'cancelled' AND balance_due > 0
+        ORDER BY id ASC
+      `, customer_id);
 
-    const unpaidBills = await tx.all(`
-      SELECT id, bill_no, grand_total, amount_paid, balance_due
-      FROM bills
-      WHERE customer_id = ? AND status != 'cancelled' AND balance_due > 0
-      ORDER BY id ASC
-    `, customer_id);
+      const plan = allocatePayment(unpaidBills, payAmount);
+      if (plan.unallocated > 0) {
+        const err = new Error('Pending balance changed while recording the payment. Please retry.');
+        err.status = 409;
+        throw err;
+      }
 
-    const primaryBillId = unpaidBills.length > 0 ? unpaidBills[0].id : null;
+      const primaryBillId = plan.allocations.length > 0 ? plan.allocations[0].billId : null;
 
-    for (const b of unpaidBills) {
-      if (unallocatedAmount <= 0) break;
-      const dueOnBill = b.balance_due;
-      const allocation = Math.min(unallocatedAmount, dueOnBill);
+      for (const allocation of plan.allocations) {
+        const update = await tx.run(`
+          UPDATE bills
+          SET amount_paid = amount_paid + ?,
+              balance_due = ?,
+              updated_at = ${nowSql}
+          WHERE id = ? AND ABS(balance_due - ?) < 0.005
+        `, allocation.allocation, allocation.newBalance, allocation.billId, allocation.previousBalance);
 
-      await tx.run(`
-        UPDATE bills
-        SET amount_paid = amount_paid + ?,
-            balance_due = balance_due - ?,
-            updated_at = ${nowSql}
-        WHERE id = ?
-      `, allocation, allocation, b.id);
+        if (update.changes !== 1) {
+          const err = new Error('Bill balance changed while recording the payment. Please retry.');
+          err.status = 409;
+          throw err;
+        }
+      }
 
-      unallocatedAmount -= allocation;
+      const payRes = await tx.run(`
+        INSERT INTO payments (
+          receipt_no, customer_id, bill_id, amount, payment_mode, notes,
+          received_by, received_by_name, whatsapp_status
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
+      `,
+        receiptNo,
+        customer_id,
+        primaryBillId,
+        payAmount,
+        payment_mode,
+        notes ? notes.trim() : null,
+        req.user.id,
+        req.user.name
+      );
+
+      return payRes.lastInsertRowid;
+    });
+  } catch (err) {
+    if (err.status === 409) {
+      return res.status(409).json({ error: err.message });
     }
-
-    const payRes = await tx.run(`
-      INSERT INTO payments (
-        receipt_no, customer_id, bill_id, amount, payment_mode, notes,
-        received_by, received_by_name, whatsapp_status
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-    `,
-      receiptNo,
-      customer_id,
-      primaryBillId,
-      payAmount,
-      payment_mode,
-      notes ? notes.trim() : null,
-      req.user.id,
-      req.user.name
-    );
-
-    return payRes.lastInsertRowid;
-  });
+    throw err;
+  }
 
   const balanceRow = await db.get(`
     SELECT COALESCE(SUM(balance_due), 0) AS remaining_balance

@@ -11,6 +11,7 @@ import InventoryReport from './pages/InventoryReport';
 import Dashboard from './pages/Dashboard';
 import DealerKhata from './pages/DealerKhata';
 import WarrantyCheck from './pages/WarrantyCheck';
+import BatteryLoans from './pages/BatteryLoans';
 import Settings from './pages/Settings';
 
 function MainApp() {
@@ -53,6 +54,8 @@ function MainApp() {
         {activeTab === 'dealers' && canViewDues && <DealerKhata />}
 
         {activeTab === 'warranty' && <WarrantyCheck />}
+
+        {activeTab === 'loans' && <BatteryLoans />}
 
         {activeTab === 'dashboard' && (isOwner || isManager) && (
           <Dashboard

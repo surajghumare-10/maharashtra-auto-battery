@@ -4,6 +4,8 @@ const { db, nowSql } = require('../db');
 const { authenticateToken, requireRole } = require('../auth');
 const { renderTemplate, sendNotification, generateWaMeUrl, getSetting } = require('../services/messaging');
 const { syncBill } = require('../services/googleSheets');
+const { computeBillTotals, roundMoney } = require('../services/billingMath');
+const { warrantyExpiry, isWarrantyExpired, daysRemaining } = require('../services/warrantyDates');
 
 const todayDate = "(now() AT TIME ZONE 'Asia/Kolkata')::date";
 
@@ -39,6 +41,43 @@ function itemDescription(items) {
   return items
     .map(i => `${i.brand} ${i.model_name} (${i.capacity_ah || ''}Ah) x${i.quantity}`)
     .join(' + ');
+}
+
+function buildBillMessageVars(bill, items, createdByRole = '') {
+  return {
+    bill_no: bill.bill_no,
+    date: String(bill.created_at || '').split(' ')[0],
+    customer_name: bill.customer_name,
+    customer_mobile: bill.customer_mobile,
+    battery_desc: itemDescription(items),
+    serial_no: items.map(i => i.serial_number).filter(Boolean).join(', ') || 'N/A',
+    exchange_discount: bill.exchange_discount,
+    amount_paid: bill.amount_paid,
+    balance_due: bill.balance_due,
+    grand_total: bill.grand_total,
+    payment_mode: bill.payment_mode,
+    warranty_months: bill.warranty_months,
+    vehicle_number: bill.vehicle_number || '',
+    village_name: bill.village_name || '',
+    created_by_name: bill.billed_by_name || bill.created_by_name || '',
+    created_by_role: createdByRole || ''
+  };
+}
+
+function buildBillMessages(bill, items, createdByRole = '') {
+  const vars = buildBillMessageVars(bill, items, createdByRole);
+  const customerMessage = renderTemplate(getSetting('msg_template_bill'), vars);
+  const ownerMessage = renderTemplate(getSetting('msg_template_owner'), vars);
+  const ownerMobile = String(getSetting('owner_mobile') || '').trim();
+  const customerWaMeUrl = generateWaMeUrl(bill.customer_mobile, customerMessage);
+
+  return {
+    customerMessage,
+    ownerMessage,
+    customerWaMeUrl,
+    ownerMobile,
+    ownerWaMeUrl: ownerMobile ? generateWaMeUrl(ownerMobile, ownerMessage) : null
+  };
 }
 
 async function normalizeItems(rawItems, oldBatteryReturned, oldBatteryType, oldBatteryBrand, oldBatteryCondition) {
@@ -78,7 +117,7 @@ async function normalizeItems(rawItems, oldBatteryReturned, oldBatteryType, oldB
       capacity_ah: battery.capacity_ah,
       quantity: qty,
       unit_price: price,
-      subtotal: qty * price,
+      subtotal: roundMoney(qty * price),
       exchange_discount: itemExchange,
       warranty_months: warranty,
       serial_number: raw.serial_number ? String(raw.serial_number).trim().toUpperCase() : null,
@@ -136,7 +175,7 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 
   if (staffId && staffId !== 'all') {
-    query += ' AND created_by = ?';
+    query += ' AND COALESCE(billed_by, created_by) = ?';
     params.push(Number(staffId));
   }
 
@@ -221,6 +260,61 @@ router.get('/warranty-check', authenticateToken, async (req, res) => {
   }
 
   if (!bill) {
+    const priorReplacement = await db.get(`
+      SELECT * FROM warranty_replacements
+      WHERE status <> 'cancelled' AND LOWER(new_serial_number) = LOWER(?)
+      ORDER BY id DESC LIMIT 1
+    `, term);
+
+    if (priorReplacement) {
+      const expiryDate = priorReplacement.warranty_expires_at
+        || warrantyExpiry(priorReplacement.replacement_date, priorReplacement.warranty_months);
+      const isUnderWarranty = !isWarrantyExpired(expiryDate);
+      const remaining = daysRemaining(expiryDate);
+      const activeReplacement = await db.get(`
+        SELECT * FROM warranty_replacements
+        WHERE status <> 'cancelled' AND LOWER(old_serial_number) = LOWER(?)
+        ORDER BY id DESC LIMIT 1
+      `, priorReplacement.new_serial_number);
+
+      return res.json({
+        found: true,
+        isUnderWarranty,
+        status: isUnderWarranty ? 'valid' : 'expired',
+        warrantySource: 'replacement',
+        purchaseDate: String(priorReplacement.replacement_date || '').split(' ')[0],
+        expiryDate,
+        warrantyMonths: priorReplacement.warranty_months || 0,
+        daysRemaining: isUnderWarranty ? Math.max(0, remaining) : 0,
+        monthsRemaining: isUnderWarranty ? Math.max(0, parseFloat((remaining / 30.4).toFixed(1))) : 0,
+        daysExpired: isUnderWarranty ? 0 : Math.abs(remaining),
+        message: isUnderWarranty
+          ? `Warranty is VALID until ${expiryDate} (${Math.max(0, remaining)} days remaining).`
+          : `WARRANTY EXPIRED on ${expiryDate} (${Math.abs(remaining)} days ago). This replacement battery is NOT covered for free replacement.`,
+        replacement: activeReplacement || null,
+        bill: {
+          id: priorReplacement.old_bill_id,
+          bill_no: priorReplacement.old_bill_no || 'WARRANTY',
+          customer_name: priorReplacement.customer_name,
+          customer_mobile: priorReplacement.customer_mobile,
+          vehicle_number: null,
+          village_name: null,
+          battery_brand: priorReplacement.battery_brand,
+          battery_model: priorReplacement.battery_model,
+          battery_type: priorReplacement.battery_type,
+          capacity_ah: null,
+          quantity: 1,
+          serial_number: priorReplacement.new_serial_number,
+          warranty_months: priorReplacement.warranty_months || 0,
+          grand_total: 0,
+          created_at: priorReplacement.replacement_date,
+          items: []
+        }
+      });
+    }
+  }
+
+  if (!bill) {
     return res.json({
       found: false,
       status: 'not_found',
@@ -239,11 +333,21 @@ router.get('/warranty-check', authenticateToken, async (req, res) => {
   const monthsRemaining = (daysRemaining / 30.4).toFixed(1);
 
   const items = await getBillItems(bill.id);
+  const replacementSerial = itemMatch ? itemMatch.item_serial : bill.serial_number;
+  const activeReplacement = replacementSerial
+    ? await db.get(`
+        SELECT * FROM warranty_replacements
+        WHERE status <> 'cancelled' AND LOWER(old_serial_number) = LOWER(?)
+        ORDER BY id DESC LIMIT 1
+      `, replacementSerial)
+    : null;
 
   res.json({
     found: true,
     isUnderWarranty,
     status: isUnderWarranty ? 'valid' : 'expired',
+    warrantySource: 'bill',
+    replacement: activeReplacement || null,
     purchaseDate: bill.created_at.split(' ')[0],
     expiryDate: expiryDate.toISOString().split('T')[0],
     warrantyMonths,
@@ -302,32 +406,15 @@ router.get('/:id', authenticateToken, async (req, res) => {
   `, bill.customer_id);
 
   const items = await getBillItems(billId);
-
-  const template = getSetting('msg_template_bill');
-  const billMsg = renderTemplate(template, {
-    bill_no: bill.bill_no,
-    date: bill.created_at.split(' ')[0],
-    customer_name: bill.customer_name,
-    customer_mobile: bill.customer_mobile,
-    battery_desc: itemDescription(items),
-    serial_no: items.map(i => i.serial_number).filter(Boolean).join(', ') || 'N/A',
-    exchange_discount: bill.exchange_discount,
-    amount_paid: bill.amount_paid,
-    balance_due: bill.balance_due,
-    grand_total: bill.grand_total,
-    payment_mode: bill.payment_mode,
-    warranty_months: bill.warranty_months,
-    vehicle_number: bill.vehicle_number || '',
-    village_name: bill.village_name || ''
-  });
-
-  const waMeUrl = generateWaMeUrl(bill.customer_mobile, billMsg);
+  const creator = await db.get('SELECT role FROM users WHERE id = ?', bill.billed_by || bill.created_by);
+  const messages = buildBillMessages(bill, items, creator ? creator.role : '');
 
   res.json({
     bill: { ...bill, items },
     edits,
     customerOverallPending: customerSummary ? customerSummary.overall_pending : 0,
-    waMeUrl
+    waMeUrl: messages.customerWaMeUrl,
+    messages
   });
 });
 
@@ -352,6 +439,7 @@ router.post('/', authenticateToken, async (req, res) => {
     warranty_months,
     serial_number,
     notes,
+    billed_by,
     allow_zero_stock_override = false,
     send_message = true,
     items: bodyItems
@@ -364,6 +452,12 @@ router.post('/', authenticateToken, async (req, res) => {
   const cleanMobile = String(customer_mobile || '').replace(/\D/g, '').slice(-10);
   if (!cleanMobile || cleanMobile.length !== 10) {
     return res.status(400).json({ error: 'Please enter a valid 10-digit mobile number' });
+  }
+
+  const billedById = Number(billed_by) || req.user.id;
+  const billedByUser = await db.get('SELECT id, name, role FROM users WHERE id = ?', billedById);
+  if (!billedByUser) {
+    return res.status(400).json({ error: 'Selected staff member was not found' });
   }
 
   const rawItems = Array.isArray(bodyItems) && bodyItems.length > 0
@@ -390,21 +484,19 @@ router.post('/', authenticateToken, async (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
 
-  const subtotal = items.reduce((sum, i) => sum + i.subtotal, 0);
-  const exDiscount = items.reduce((sum, i) => sum + i.exchange_discount, 0);
-  const manDiscount = Math.max(0, parseFloat(manual_discount) || 0);
-  const grandTotal = Math.max(0, subtotal - exDiscount - manDiscount);
-
-  let paidAmount = 0;
-  if (amount_paid !== undefined && amount_paid !== '' && amount_paid !== null) {
-    paidAmount = Math.max(0, parseFloat(amount_paid) || 0);
-  } else if (payment_mode === 'Credit') {
-    paidAmount = 0;
-  } else {
-    paidAmount = grandTotal;
-  }
-  paidAmount = Math.min(paidAmount, grandTotal);
-  const balanceDue = Math.max(0, grandTotal - paidAmount);
+  const {
+    subtotal,
+    exchangeDiscount: exDiscount,
+    manualDiscount: manDiscount,
+    grandTotal,
+    paidAmount,
+    balanceDue
+  } = computeBillTotals({
+    items,
+    manualDiscount: manual_discount,
+    amountPaid: amount_paid,
+    paymentMode: payment_mode
+  });
 
   const validModes = ['Cash', 'UPI', 'Card', 'Credit'];
   const mode = validModes.includes(payment_mode) ? payment_mode : 'Cash';
@@ -463,14 +555,14 @@ router.post('/', authenticateToken, async (req, res) => {
         quantity, unit_price, subtotal, old_battery_returned, old_battery_type,
         old_battery_brand, old_battery_condition, exchange_discount, manual_discount,
         grand_total, payment_mode, amount_paid, balance_due, warranty_months,
-        serial_number, notes, created_by, created_by_name, whatsapp_status
+        serial_number, notes, created_by, created_by_name, billed_by, billed_by_name, whatsapp_status
       ) VALUES (
         ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, 'pending'
+        ?, ?, ?, ?, ?, ?, 'pending'
       )
     `,
       billNo, customerId, customer_name.trim(), cleanMobile, vNum, vName,
@@ -479,7 +571,7 @@ router.post('/', authenticateToken, async (req, res) => {
       old_battery_brand || 'Old Return', old_battery_condition || 'Used', exDiscount, manDiscount,
       grandTotal, mode, paidAmount, balanceDue, primary.warranty_months,
       primary.serial_number, notes ? notes.trim() : null,
-      req.user.id, req.user.name
+      req.user.id, req.user.name, billedByUser.id, billedByUser.name
     );
 
     const newBillId = billRes.lastInsertRowid;
@@ -520,72 +612,37 @@ router.post('/', authenticateToken, async (req, res) => {
   const createdItems = await getBillItems(createdBillId);
 
   let customerMsgResult = { success: false, status: 'wa_link_ready' };
-  let ownerMsgResult = { success: false };
+  let ownerMsgResult = { success: false, status: 'not_configured' };
 
-  const billDate = createdBill.created_at.split(' ')[0];
-  const batteryDesc = itemDescription(createdItems);
-
-  const customerMsgTemplate = getSetting('msg_template_bill');
-  const customerMsgText = renderTemplate(customerMsgTemplate, {
-    bill_no: createdBill.bill_no,
-    date: billDate,
-    customer_name: createdBill.customer_name,
-    customer_mobile: createdBill.customer_mobile,
-    battery_desc: batteryDesc,
-    serial_no: createdItems.map(i => i.serial_number).filter(Boolean).join(', ') || 'N/A',
-    exchange_discount: createdBill.exchange_discount,
-    amount_paid: createdBill.amount_paid,
-    balance_due: createdBill.balance_due,
-    grand_total: createdBill.grand_total,
-    payment_mode: createdBill.payment_mode,
-    warranty_months: createdBill.warranty_months,
-    vehicle_number: createdBill.vehicle_number || '',
-    village_name: createdBill.village_name || ''
-  });
-
-  const customerWaMeUrl = generateWaMeUrl(createdBill.customer_mobile, customerMsgText);
+  const messages = buildBillMessages(createdBill, createdItems, billedByUser.role);
 
   if (send_message) {
     try {
-      customerMsgResult = await sendNotification(createdBill.customer_mobile, customerMsgText);
+      customerMsgResult = await sendNotification(createdBill.customer_mobile, messages.customerMessage);
       await db.run('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?',
         customerMsgResult.status, customerMsgResult.error || null, createdBillId);
     } catch (err) {
       console.error('Customer message error:', err);
       await db.run("UPDATE bills SET whatsapp_status = 'failed', whatsapp_error = ? WHERE id = ?", err.message, createdBillId);
-      customerMsgResult = { success: false, status: 'failed', error: err.message, waMeUrl: customerWaMeUrl };
-    }
-
-    const ownerMobile = getSetting('owner_mobile');
-    if (ownerMobile) {
-      const ownerMsgTemplate = getSetting('msg_template_owner');
-      const ownerMsgText = renderTemplate(ownerMsgTemplate, {
-        bill_no: createdBill.bill_no,
-        date: billDate,
-        created_by_name: req.user.name,
-        created_by_role: req.user.role,
-        customer_name: createdBill.customer_name,
-        customer_mobile: createdBill.customer_mobile,
-        battery_desc: batteryDesc,
-        grand_total: createdBill.grand_total,
-        amount_paid: createdBill.amount_paid,
-        payment_mode: createdBill.payment_mode,
-        balance_due: createdBill.balance_due
-      });
-      try {
-        ownerMsgResult = await sendNotification(ownerMobile, ownerMsgText);
-      } catch (err) {
-        console.error('Owner notification error:', err);
-      }
+      customerMsgResult = { success: false, status: 'failed', error: err.message, waMeUrl: messages.customerWaMeUrl };
     }
   } else {
-    customerMsgResult = { success: true, status: 'manual_wa_ready', waMeUrl: customerWaMeUrl };
+    customerMsgResult = { success: true, status: 'manual_wa_ready', waMeUrl: messages.customerWaMeUrl };
+  }
+
+  if (messages.ownerMobile) {
+    try {
+      ownerMsgResult = await sendNotification(messages.ownerMobile, messages.ownerMessage);
+    } catch (err) {
+      console.error('Owner notification error:', err);
+      ownerMsgResult = { success: false, status: 'failed', error: err.message };
+    }
   }
 
   const finalBill = await db.get('SELECT * FROM bills WHERE id = ?', createdBillId);
 
   try {
-    syncBill({ ...finalBill, created_by_name: req.user.name }, createdItems);
+    syncBill(finalBill, createdItems);
   } catch (e) {
     // non-blocking
   }
@@ -595,8 +652,13 @@ router.post('/', authenticateToken, async (req, res) => {
     messaging: {
       customerStatus: customerMsgResult.status,
       customerError: customerMsgResult.error,
-      waMeUrl: customerWaMeUrl,
-      ownerStatus: ownerMsgResult.status
+      customerMessage: messages.customerMessage,
+      waMeUrl: messages.customerWaMeUrl,
+      ownerStatus: ownerMsgResult.status,
+      ownerError: ownerMsgResult.error,
+      ownerMobile: messages.ownerMobile,
+      ownerMessage: messages.ownerMessage,
+      ownerWaMeUrl: messages.ownerWaMeUrl
     }
   });
 });
@@ -636,6 +698,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
     warranty_months,
     serial_number,
     notes,
+    billed_by,
     old_battery_returned,
     old_battery_type,
     old_battery_brand,
@@ -644,6 +707,19 @@ router.put('/:id', authenticateToken, async (req, res) => {
   } = req.body;
 
   const existingItems = await getBillItems(billId);
+
+  let billedByUser = null;
+  if (billed_by !== undefined) {
+    const nextBilledById = Number(billed_by);
+    const currentBilledById = bill.billed_by || bill.created_by;
+    if (req.user.role === 'worker' && nextBilledById !== currentBilledById) {
+      return res.status(403).json({ error: 'Only owner or manager can change who billed this bill.' });
+    }
+    billedByUser = await db.get('SELECT id, name, role FROM users WHERE id = ?', nextBilledById);
+    if (!billedByUser) {
+      return res.status(400).json({ error: 'Selected staff member was not found' });
+    }
+  }
 
   let rawItems;
   if (Array.isArray(bodyItems) && bodyItems.length > 0) {
@@ -686,14 +762,21 @@ router.put('/:id', authenticateToken, async (req, res) => {
     return res.status(err.status || 400).json({ error: err.message });
   }
 
-  const newSubtotal = newItems.reduce((sum, i) => sum + i.subtotal, 0);
-  const newExDiscount = newItems.reduce((sum, i) => sum + i.exchange_discount, 0);
-  const newManDiscount = Math.max(0, parseFloat(manual_discount) || 0);
-  const newGrandTotal = Math.max(0, newSubtotal - newExDiscount - newManDiscount);
-
-  let newPaid = parseFloat(amount_paid) || 0;
-  newPaid = Math.min(Math.max(0, newPaid), newGrandTotal);
-  const newDue = Math.max(0, newGrandTotal - newPaid);
+  const {
+    subtotal: newSubtotal,
+    exchangeDiscount: newExDiscount,
+    manualDiscount: newManDiscount,
+    grandTotal: newGrandTotal,
+    paidAmount: newPaid,
+    balanceDue: newDue
+  } = computeBillTotals({
+    items: newItems,
+    manualDiscount: manual_discount,
+    amountPaid: amount_paid !== undefined && amount_paid !== null && amount_paid !== ''
+      ? amount_paid
+      : bill.amount_paid,
+    paymentMode: payment_mode !== undefined ? payment_mode : bill.payment_mode
+  });
   const primary = newItems[0];
 
   const cleanMobile = String(customer_mobile).replace(/\D/g, '').slice(-10);
@@ -772,6 +855,11 @@ router.put('/:id', authenticateToken, async (req, res) => {
     if (newGrandTotal !== bill.grand_total) changes.push(`Total: ₹${bill.grand_total} -> ₹${newGrandTotal}`);
     if (newPaid !== bill.amount_paid) changes.push(`Paid: ₹${bill.amount_paid} -> ₹${newPaid}`);
     if (payment_mode !== bill.payment_mode) changes.push(`Mode: ${bill.payment_mode} -> ${payment_mode}`);
+    const nextBilledById = billedByUser ? billedByUser.id : (bill.billed_by || bill.created_by);
+    const nextBilledByName = billedByUser ? billedByUser.name : (bill.billed_by_name || bill.created_by_name);
+    if (nextBilledById !== (bill.billed_by || bill.created_by)) {
+      changes.push(`Billed by: ${bill.billed_by_name || bill.created_by_name} -> ${nextBilledByName}`);
+    }
     const summary = changes.length > 0 ? changes.join('; ') : 'Details updated';
 
     await tx.run(`
@@ -796,7 +884,7 @@ router.put('/:id', authenticateToken, async (req, res) => {
           quantity = ?, unit_price = ?, subtotal = ?, old_battery_returned = ?,
           exchange_discount = ?, manual_discount = ?, grand_total = ?, payment_mode = ?,
           amount_paid = ?, balance_due = ?, warranty_months = ?, serial_number = ?, notes = ?,
-          updated_at = ${nowSql}
+          billed_by = ?, billed_by_name = ?, updated_at = ${nowSql}
       WHERE id = ?
     `,
       customerId,
@@ -822,6 +910,8 @@ router.put('/:id', authenticateToken, async (req, res) => {
       primary.warranty_months,
       primary.serial_number,
       notes !== undefined ? (notes ? notes.trim() : null) : bill.notes,
+      nextBilledById,
+      nextBilledByName,
       billId
     );
   });
@@ -879,36 +969,20 @@ router.post('/:id/resend-message', authenticateToken, async (req, res) => {
   }
 
   const items = await getBillItems(billId);
-  const billDate = bill.created_at.split(' ')[0];
-  const template = getSetting('msg_template_bill');
-  const messageText = renderTemplate(template, {
-    bill_no: bill.bill_no,
-    date: billDate,
-    customer_name: bill.customer_name,
-    customer_mobile: bill.customer_mobile,
-    battery_desc: itemDescription(items),
-    serial_no: items.map(i => i.serial_number).filter(Boolean).join(', ') || 'N/A',
-    exchange_discount: bill.exchange_discount,
-    amount_paid: bill.amount_paid,
-    balance_due: bill.balance_due,
-    grand_total: bill.grand_total,
-    payment_mode: bill.payment_mode,
-    warranty_months: bill.warranty_months,
-    vehicle_number: bill.vehicle_number || '',
-    village_name: bill.village_name || ''
-  });
-
-  const waMeUrl = generateWaMeUrl(bill.customer_mobile, messageText);
+  const creator = await db.get('SELECT role FROM users WHERE id = ?', bill.billed_by || bill.created_by);
+  const messages = buildBillMessages(bill, items, creator ? creator.role : '');
 
   try {
-    const sendRes = await sendNotification(bill.customer_mobile, messageText);
+    const sendRes = await sendNotification(bill.customer_mobile, messages.customerMessage);
     await db.run('UPDATE bills SET whatsapp_status = ?, whatsapp_error = ? WHERE id = ?',
       sendRes.status, sendRes.error || null, billId);
 
     return res.json({
       status: sendRes.status,
       provider: sendRes.provider,
-      waMeUrl,
+      message: messages.customerMessage,
+      waMeUrl: messages.customerWaMeUrl,
+      ownerWaMeUrl: messages.ownerWaMeUrl,
       error: sendRes.error
     });
   } catch (err) {
@@ -917,7 +991,9 @@ router.post('/:id/resend-message', authenticateToken, async (req, res) => {
     return res.json({
       status: 'failed',
       error: err.message,
-      waMeUrl
+      message: messages.customerMessage,
+      waMeUrl: messages.customerWaMeUrl,
+      ownerWaMeUrl: messages.ownerWaMeUrl
     });
   }
 });

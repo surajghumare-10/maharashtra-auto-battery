@@ -17,6 +17,8 @@ const reportRoutes = require('./routes/reports');
 const settingRoutes = require('./routes/settings');
 const supplierRoutes = require('./routes/suppliers');
 const backupRoutes = require('./routes/backup');
+const warrantyReplacementRoutes = require('./routes/warrantyReplacements');
+const loanRoutes = require('./routes/loans');
 
 const app = express();
 const PORT = process.env.PORT || 5001;
@@ -47,6 +49,8 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/settings', settingRoutes);
 app.use('/api/suppliers', supplierRoutes);
 app.use('/api/backup', backupRoutes);
+app.use('/api/warranty-replacements', warrantyReplacementRoutes);
+app.use('/api/loans', loanRoutes);
 
 // Serve Client in production or when client/dist exists
 const clientDistPath = path.join(__dirname, '..', 'client', 'dist');
@@ -69,8 +73,11 @@ if (fs.existsSync(clientDistPath)) {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
-  console.error('Unhandled Server Error:', err);
-  res.status(500).json({ error: err.message || 'Internal Server Error' });
+  const status = Number(err.status) || 500;
+  if (status >= 500) {
+    console.error('Unhandled Server Error:', err);
+  }
+  res.status(status).json({ error: err.message || 'Internal Server Error' });
 });
 
 async function startServer() {

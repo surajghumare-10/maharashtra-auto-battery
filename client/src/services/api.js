@@ -48,6 +48,7 @@ export const api = {
   login: (username, password, rememberMe) => apiRequest('/auth/login', 'POST', { username, password, rememberMe }),
   getMe: () => apiRequest('/auth/me'),
   getUsers: () => apiRequest('/auth/users'),
+  getStaff: () => apiRequest('/auth/staff'),
   createUser: (data) => apiRequest('/auth/users', 'POST', data),
   updateUser: (id, data) => apiRequest(`/auth/users/${id}`, 'PUT', data),
   resetPassword: (id, newPassword) => apiRequest(`/auth/users/${id}/reset-password`, 'PUT', { newPassword }),
@@ -82,6 +83,20 @@ export const api = {
   deleteBill: (id) => apiRequest(`/bills/${id}`, 'DELETE'),
   resendBillMessage: (id) => apiRequest(`/bills/${id}/resend-message`, 'POST'),
   checkWarranty: (search) => apiRequest(`/bills/warranty-check?search=${encodeURIComponent(search)}`),
+  getWarrantyReplacements: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(`/warranty-replacements${query ? '?' + query : ''}`);
+  },
+  createWarrantyReplacement: (data) => apiRequest('/warranty-replacements', 'POST', data),
+  receiveWarrantyReplacement: (id) => apiRequest(`/warranty-replacements/${id}/received`, 'POST'),
+
+  // Battery loans (lend / borrow)
+  getLoans: (params = {}) => {
+    const query = new URLSearchParams(params).toString();
+    return apiRequest(`/loans${query ? '?' + query : ''}`);
+  },
+  createLoan: (data) => apiRequest('/loans', 'POST', data),
+  returnLoan: (id) => apiRequest(`/loans/${id}/return`, 'POST'),
 
   // Dealers / Suppliers (khata)
   getSuppliers: (params = {}) => {

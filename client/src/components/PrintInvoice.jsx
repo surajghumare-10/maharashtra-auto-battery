@@ -91,7 +91,7 @@ export default function PrintInvoice({ bill, shopSettings, onClose }) {
             <div>
               <p><span className="text-slate-500">Bill No:</span> <strong className="text-sm font-black text-slate-900">{bill.bill_no}</strong></p>
               <p><span className="text-slate-500">Date &amp; Time:</span> <strong>{formatDateTime(bill.created_at)}</strong></p>
-              <p><span className="text-slate-500">Billed By:</span> <strong>{bill.created_by_name}</strong></p>
+              <p><span className="text-slate-500">Billed By:</span> <strong>{bill.billed_by_name || bill.created_by_name}</strong></p>
               {bill.vehicle_number && (
                 <p><span className="text-slate-500">Vehicle No:</span> <strong className="uppercase">{bill.vehicle_number}</strong></p>
               )}

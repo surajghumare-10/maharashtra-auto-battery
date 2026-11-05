@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../services/api';
 import { formatCurrency, formatDate, formatDateTime, exportToCSV } from '../utils/formatters';
+import { copyText } from '../utils/clipboard';
 import PrintInvoice from '../components/PrintInvoice';
 import {
   Search,
@@ -17,7 +18,8 @@ import {
   MessageCircle,
   FileSpreadsheet,
   X,
-  ChevronRight
+  ChevronRight,
+  Copy
 } from 'lucide-react';
 
 export default function BillsList({ initialSelectedBillId, onClearInitialBillId }) {
@@ -31,6 +33,8 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
   const [customEndDate, setCustomEndDate] = useState('');
   const [paymentModeFilter, setPaymentModeFilter] = useState('all');
   const [batteryTypeFilter, setBatteryTypeFilter] = useState('all');
+  const [staffFilter, setStaffFilter] = useState('all');
+  const [staffList, setStaffList] = useState([]);
 
   // Modals
   const [selectedBill, setSelectedBill] = useState(null);
@@ -40,13 +44,20 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
   const [billEdits, setBillEdits] = useState([]);
   const [actionMessage, setActionMessage] = useState('');
   const [resendingId, setResendingId] = useState(null);
+  const [copiedTarget, setCopiedTarget] = useState('');
 
   // Edit form state
   const [editForm, setEditForm] = useState({});
 
   useEffect(() => {
     loadBills();
-  }, [dateFilter, customStartDate, customEndDate, paymentModeFilter, batteryTypeFilter]);
+  }, [dateFilter, customStartDate, customEndDate, paymentModeFilter, batteryTypeFilter, staffFilter]);
+
+  useEffect(() => {
+    api.getStaff()
+      .then(res => setStaffList(res.users || []))
+      .catch(err => console.error('Failed to load staff list:', err));
+  }, []);
 
   // Handle open from New Bill
   useEffect(() => {
@@ -66,6 +77,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       if (search.trim()) params.search = search.trim();
       if (paymentModeFilter !== 'all') params.paymentMode = paymentModeFilter;
       if (batteryTypeFilter !== 'all') params.batteryType = batteryTypeFilter;
+      if (staffFilter !== 'all') params.staffId = staffFilter;
 
       const now = new Date();
       const yyyy = now.getFullYear();
@@ -109,7 +121,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
   const handleViewBill = async (bill) => {
     try {
       const res = await api.getBill(bill.id);
-      setSelectedBill(res.bill);
+      setSelectedBill({ ...res.bill, messages: res.messages, waMeUrl: res.waMeUrl });
       setBillEdits(res.edits || []);
     } catch (err) {
       console.error('Error fetching bill detail:', err);
@@ -153,6 +165,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       payment_mode: bill.payment_mode,
       amount_paid: bill.amount_paid,
       notes: bill.notes || '',
+      billed_by: bill.billed_by || bill.created_by,
       items
     });
     setShowEditModal(true);
@@ -183,7 +196,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       loadBills();
       // Reload current selected
       const fresh = await api.getBill(editForm.id);
-      setSelectedBill(fresh.bill);
+      setSelectedBill({ ...fresh.bill, messages: fresh.messages, waMeUrl: fresh.waMeUrl });
       setBillEdits(fresh.edits);
     } catch (err) {
       alert(err.message || 'Failed to update bill');
@@ -218,13 +231,20 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       loadBills();
       if (selectedBill?.id === billId) {
         const fresh = await api.getBill(billId);
-        setSelectedBill(fresh.bill);
+        setSelectedBill({ ...fresh.bill, messages: fresh.messages, waMeUrl: fresh.waMeUrl });
       }
     } catch (err) {
       alert(err.message || 'Failed to resend message');
     } finally {
       setResendingId(null);
     }
+  };
+
+  const handleCopyBillMessage = async (target, text) => {
+    const copied = await copyText(text);
+    if (!copied) return;
+    setCopiedTarget(target);
+    setTimeout(() => setCopiedTarget(''), 2000);
   };
 
   // Check if current user can edit this bill
@@ -265,7 +285,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
       'Warranty (M)': b.warranty_months,
       'Serial Number': b.serial_number || '',
       'Status': b.status,
-      'Staff': b.created_by_name
+      'Staff': b.billed_by_name || b.created_by_name
     }));
     exportToCSV(`bills_export_${new Date().toISOString().split('T')[0]}.csv`, dataToExport);
   };
@@ -355,18 +375,31 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
             </button>
           ))}
 
-          {/* Payment Mode Filter */}
-          <select
-            value={paymentModeFilter}
-            onChange={(e) => setPaymentModeFilter(e.target.value)}
-            className="h-7 px-2 border border-slate-300 rounded text-xs font-semibold bg-white ml-auto"
-          >
-            <option value="all">All Payment Modes</option>
-            <option value="UPI">UPI</option>
-            <option value="Cash">Cash</option>
-            <option value="Card">Card</option>
-            <option value="Credit">Credit (Pay Later)</option>
-          </select>
+          <div className="flex items-center gap-1.5 ml-auto">
+            <select
+              value={staffFilter}
+              onChange={(e) => setStaffFilter(e.target.value)}
+              className="h-7 px-2 border border-slate-300 rounded text-xs font-semibold bg-white"
+            >
+              <option value="all">All Staff</option>
+              {staffList.map(staff => (
+                <option key={staff.id} value={staff.id}>{staff.name}</option>
+              ))}
+            </select>
+
+            {/* Payment Mode Filter */}
+            <select
+              value={paymentModeFilter}
+              onChange={(e) => setPaymentModeFilter(e.target.value)}
+              className="h-7 px-2 border border-slate-300 rounded text-xs font-semibold bg-white"
+            >
+              <option value="all">All Payment Modes</option>
+              <option value="UPI">UPI</option>
+              <option value="Cash">Cash</option>
+              <option value="Card">Card</option>
+              <option value="Credit">Credit (Pay Later)</option>
+            </select>
+          </div>
         </div>
 
         {/* Custom Date Inputs if Custom selected */}
@@ -478,7 +511,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                     </div>
 
                     <div className="flex items-center space-x-1.5 mt-1 text-[11px]">
-                      <span className="text-slate-500 hidden sm:inline">By {bill.created_by_name?.split(' ')[0]}</span>
+                      <span className="text-slate-500 hidden sm:inline">By {(bill.billed_by_name || bill.created_by_name)?.split(' ')[0]}</span>
                       <ChevronRight className="w-4 h-4 text-slate-400" />
                     </div>
                   </div>
@@ -530,7 +563,7 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                 <div className="text-right">
                   <span className="text-slate-500 block text-[11px]">Billed Date:</span>
                   <strong className="text-slate-900">{formatDateTime(selectedBill.created_at)}</strong>
-                  <div className="text-slate-600 text-[11px]">Staff: {selectedBill.created_by_name}</div>
+                  <div className="text-slate-600 text-[11px]">Staff: {selectedBill.billed_by_name || selectedBill.created_by_name}</div>
                 </div>
               </div>
 
@@ -602,23 +635,80 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                 )}
               </div>
 
-              {/* Messaging status strip */}
-              <div className="p-2.5 bg-blue-50 border border-blue-200 rounded text-xs flex items-center justify-between">
-                <div>
-                  <span className="font-bold text-blue-900">WhatsApp Status: </span>
-                  <span className="capitalize font-semibold text-blue-800">
-                    {selectedBill.whatsapp_status || 'Pending'}
-                  </span>
+              {/* Messaging actions */}
+              <div className="space-y-2">
+                <div className="p-2.5 bg-blue-50 border border-blue-200 rounded text-xs">
+                  <div className="flex items-center justify-between gap-2">
+                    <div>
+                      <span className="font-bold text-blue-900">Customer WhatsApp: </span>
+                      <span className="capitalize font-semibold text-blue-800">
+                        {selectedBill.whatsapp_status || 'Pending'}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={resendingId === selectedBill.id}
+                      onClick={() => handleResend(selectedBill.id)}
+                      className="px-2.5 py-1 bg-white hover:bg-blue-100 border border-blue-300 rounded font-bold text-[10px] text-blue-900 flex items-center space-x-1"
+                    >
+                      <Send className="w-3 h-3" />
+                      <span>{resendingId === selectedBill.id ? 'Sending...' : 'Resend Auto'}</span>
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    {selectedBill.waMeUrl ? (
+                      <a
+                        href={selectedBill.waMeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="h-9 bg-emerald-600 hover:bg-emerald-700 text-white font-black rounded text-[10px] flex items-center justify-center space-x-1"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>Open WhatsApp</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : <span />}
+                    <button
+                      type="button"
+                      onClick={() => handleCopyBillMessage('customer', selectedBill.messages?.customerMessage)}
+                      className="h-9 bg-white hover:bg-blue-100 text-blue-900 font-black rounded text-[10px] border border-blue-300 flex items-center justify-center space-x-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedTarget === 'customer' ? 'Copied!' : 'Copy Template'}</span>
+                    </button>
+                  </div>
                 </div>
-                <button
-                  type="button"
-                  disabled={resendingId === selectedBill.id}
-                  onClick={() => handleResend(selectedBill.id)}
-                  className="px-2.5 py-1 bg-white hover:bg-blue-100 border border-blue-300 rounded font-bold text-xs text-blue-900 flex items-center space-x-1"
-                >
-                  <Send className="w-3 h-3" />
-                  <span>{resendingId === selectedBill.id ? 'Sending...' : 'Resend WhatsApp'}</span>
-                </button>
+
+                <div className="p-2.5 bg-amber-50 border border-amber-200 rounded text-xs">
+                  <div className="font-bold text-amber-900">Owner Notification</div>
+                  <div className="grid grid-cols-2 gap-2 mt-2">
+                    {selectedBill.messages?.ownerWaMeUrl ? (
+                      <a
+                        href={selectedBill.messages.ownerWaMeUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="h-9 bg-amber-700 hover:bg-amber-800 text-white font-black rounded text-[10px] flex items-center justify-center space-x-1"
+                      >
+                        <MessageCircle className="w-3.5 h-3.5" />
+                        <span>Notify Owner</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </a>
+                    ) : <span />}
+                    <button
+                      type="button"
+                      onClick={() => handleCopyBillMessage('owner', selectedBill.messages?.ownerMessage)}
+                      className="h-9 bg-white hover:bg-amber-100 text-amber-900 font-black rounded text-[10px] border border-amber-300 flex items-center justify-center space-x-1"
+                    >
+                      <Copy className="w-3.5 h-3.5" />
+                      <span>{copiedTarget === 'owner' ? 'Copied!' : 'Copy Template'}</span>
+                    </button>
+                  </div>
+                  {!selectedBill.messages?.ownerWaMeUrl && (
+                    <div className="text-[10px] font-semibold text-amber-900 mt-1">
+                      Set Owner Mobile in Settings to create the owner link.
+                    </div>
+                  )}
+                </div>
               </div>
 
               {/* Edit History (if any) */}
@@ -815,14 +905,30 @@ export default function BillsList({ initialSelectedBillId, onClearInitialBillId 
                 </div>
               </div>
 
-              <div>
-                <label className="block font-bold text-slate-700 mb-0.5">Notes</label>
-                <input
-                  type="text"
-                  value={editForm.notes}
-                  onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
-                  className="w-full h-9 px-2 border rounded"
-                />
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="block font-bold text-slate-700 mb-0.5">Notes</label>
+                  <input
+                    type="text"
+                    value={editForm.notes}
+                    onChange={(e) => setEditForm({ ...editForm, notes: e.target.value })}
+                    className="w-full h-9 px-2 border rounded"
+                  />
+                </div>
+                {(isOwner || isManager) && (
+                  <div>
+                    <label className="block font-bold text-slate-700 mb-0.5">Billed By (Staff)</label>
+                    <select
+                      value={editForm.billed_by || ''}
+                      onChange={(e) => setEditForm({ ...editForm, billed_by: e.target.value })}
+                      className="w-full h-9 px-2 border rounded font-semibold bg-white"
+                    >
+                      {staffList.map(staff => (
+                        <option key={staff.id} value={staff.id}>{staff.name} ({staff.role})</option>
+                      ))}
+                    </select>
+                  </div>
+                )}
               </div>
 
               <p className="text-[11px] text-slate-500 italic">

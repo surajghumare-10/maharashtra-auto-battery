@@ -14,6 +14,7 @@ export default function PriceList() {
   const [selectedType, setSelectedType] = useState('All');
   const [search, setSearch] = useState('');
   const [statusMessage, setStatusMessage] = useState('');
+  const [saving, setSaving] = useState(false);
 
   // Modals
   const [showAddModal, setShowAddModal] = useState(false);
@@ -82,6 +83,20 @@ export default function PriceList() {
 
   const handleSaveAdd = async (e) => {
     e.preventDefault();
+    if (saving) return;
+
+    const duplicate = batteries.find(b =>
+      b.brand.trim().toLowerCase() === form.brand.trim().toLowerCase() &&
+      b.model_name.trim().toLowerCase() === form.model_name.trim().toLowerCase() &&
+      b.type === form.type &&
+      Number(b.capacity_ah) === (Number(form.capacity_ah) || 0)
+    );
+    if (duplicate) {
+      alert(`${duplicate.brand} ${duplicate.model_name} (${duplicate.type}, ${duplicate.capacity_ah}Ah) already exists. Edit that model instead.`);
+      return;
+    }
+
+    setSaving(true);
     try {
       await api.createBattery(form);
       setShowAddModal(false);
@@ -89,11 +104,15 @@ export default function PriceList() {
       loadBatteries();
     } catch (err) {
       alert(err.message || 'Failed to add model');
+    } finally {
+      setSaving(false);
     }
   };
 
   const handleSaveEdit = async (e) => {
     e.preventDefault();
+    if (saving) return;
+    setSaving(true);
     try {
       await api.updateBattery(editingBattery.id, form);
       setEditingBattery(null);
@@ -101,6 +120,8 @@ export default function PriceList() {
       loadBatteries();
     } catch (err) {
       alert(err.message || 'Failed to update battery');
+    } finally {
+      setSaving(false);
     }
   };
 
@@ -434,9 +455,10 @@ export default function PriceList() {
                 </button>
                 <button
                   type="submit"
-                  className="px-4 py-2 bg-accent-700 text-white rounded font-black shadow"
+                  disabled={saving}
+                  className="px-4 py-2 bg-accent-700 text-white rounded font-black shadow disabled:opacity-60"
                 >
-                  Save Model
+                  {saving ? 'Saving...' : 'Save Model'}
                 </button>
               </div>
             </form>

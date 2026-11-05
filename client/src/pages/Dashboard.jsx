@@ -224,7 +224,7 @@ export default function Dashboard({ onOpenBillDetail }) {
                     {(b.items && b.items.length > 0)
                       ? b.items.map(i => `${i.brand} ${i.model_name} x${i.quantity}`).join(' + ')
                       : `${b.battery_brand} ${b.battery_model}`}
-                    {' • '}{b.payment_mode} • By {b.created_by_name?.split(' ')[0]}
+                    {' • '}{b.payment_mode} • By {(b.billed_by_name || b.created_by_name)?.split(' ')[0]}
                   </div>
                 </div>
                 <div className="text-right font-black text-slate-900 text-sm">
